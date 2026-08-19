@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><style>html,body{margin:0;padding:0;background:#000}</style></head>
+<body>
+<canvas id="cover"></canvas>
+<script>
+// Cover generator for Neon Slasher — ?w=&h=&sq=1 (sq=vertical/square layout)
+const q = new URLSearchParams(location.search);
+const W = parseInt(q.get('w') || '1920', 10);
+const H = parseInt(q.get('h') || '1080', 10);
+const canvas = document.getElementById('cover');
+canvas.width = W; canvas.height = H;
+const g = canvas.getContext('2d');
+const sq = q.get('sq') === '1';
+const S = Math.min(W, H) / 1080;
+
+// bg
+const bg = g.createLinearGradient(0, 0, 0, H);
+bg.addColorStop(0, '#05060f'); bg.addColorStop(0.6, '#0c0620'); bg.addColorStop(1, '#140a2e');
+g.fillStyle = bg; g.fillRect(0, 0, W, H);
+
+// grid
+g.strokeStyle = 'rgba(60,80,180,0.13)'; g.lineWidth = Math.max(1, S);
+const gs = 64 * S;
+for (let x = 0; x < W; x += gs) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+for (let y = 0; y < H; y += gs) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+
+// arena ring behind hero
+const heroX = sq ? W * 0.5 : W * 0.68;
+const heroY = sq ? H * 0.62 : H * 0.55;
+g.save();
+g.shadowColor = '#4de8ff'; g.shadowBlur = 40 * S;
+g.strokeStyle = 'rgba(77,232,255,0.85)'; g.lineWidth = 5 * S;
+g.beginPath(); g.arc(heroX, heroY, 330 * S, 0, Math.PI * 2); g.stroke();
+g.strokeStyle = 'rgba(157,77,255,0.4)'; g.lineWidth = 3 * S;
+g.beginPath(); g.arc(heroX, heroY, 355 * S, 0, Math.PI * 2); g.stroke();
+g.restore();
+g.fillStyle = 'rgba(20,30,70,0.3)';
+g.beginPath(); g.arc(heroX, heroY, 330 * S, 0, Math.PI * 2); g.fill();
+
+function neonPoly(x, y, r, sides, hue, rot, star) {
+  g.save(); g.translate(x, y); g.rotate(rot);
+  g.shadowColor = 'hsl(' + hue + ',100%,60%)'; g.shadowBlur = 24 * S;
+  g.strokeStyle = 'hsl(' + hue + ',100%,65%)';
+  g.fillStyle = 'hsla(' + hue + ',80%,20%,0.9)';
+  g.lineWidth = 4 * S;
+  g.beginPath();
+  const n = star ? sides * 2 : sides;
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const rr = star && i % 2 ? r * 0.72 : r;
+    const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
+    if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+  }
+  g.closePath(); g.fill(); g.stroke();
+  g.fillStyle = 'hsl(' + hue + ',100%,70%)';
+  g.beginPath(); g.arc(0, 0, r * 0.24, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+
+function particles(cx, cy, hue, n, spread) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, d = Math.random() * spread;
+    g.save();
+    g.shadowColor = 'hsl(' + hue + ',100%,60%)'; g.shadowBlur = 10 * S;
+    g.fillStyle = 'hsla(' + hue + ',100%,65%,' + (0.4 + Math.random() * 0.6) + ')';
+    g.beginPath(); g.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d, (2 + Math.random() * 4) * S, 0, Math.PI * 2);
+    g.fill(); g.restore();
+  }
+}
+
+let seed = 7;
+function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+Math.random = rnd;
+
+// enemies around hero
+if (!sq) {
+  neonPoly(heroX - 250 * S, heroY - 160 * S, 42 * S, 6, 185, 0.4);
+  neonPoly(heroX + 230 * S, heroY - 200 * S, 38 * S, 4, 300, 0.2);
+  neonPoly(heroX + 270 * S, heroY + 120 * S, 34 * S, 3, 20, 1.2);
+  neonPoly(heroX - 120 * S, heroY + 230 * S, 55 * S, 8, 265, 0.1, true);
+  particles(heroX - 200 * S, heroY + 40 * S, 185, 26, 90 * S);
+  particles(heroX + 150 * S, heroY - 80 * S, 300, 20, 70 * S);
+} else {
+  neonPoly(heroX - 220 * S, heroY - 140 * S, 38 * S, 6, 185, 0.4);
+  neonPoly(heroX + 210 * S, heroY - 170 * S, 34 * S, 4, 300, 0.2);
+  neonPoly(heroX + 200 * S, heroY + 160 * S, 30 * S, 3, 20, 1.2);
+  particles(heroX - 160 * S, heroY + 90 * S, 185, 22, 80 * S);
+  particles(heroX + 130 * S, heroY - 60 * S, 300, 18, 60 * S);
+}
+
+// slash arc
+g.save();
+g.shadowColor = '#ff4dff'; g.shadowBlur = 50 * S;
+g.strokeStyle = 'rgba(255,180,255,0.95)'; g.lineWidth = 16 * S;
+g.beginPath(); g.arc(heroX, heroY, 190 * S, -Math.PI * 0.85, -Math.PI * 0.15); g.stroke();
+g.strokeStyle = 'rgba(255,77,255,0.5)'; g.lineWidth = 30 * S;
+g.beginPath(); g.arc(heroX, heroY, 190 * S, -Math.PI * 0.8, -Math.PI * 0.2); g.stroke();
+g.restore();
+
+// hero (big neon warrior)
+g.save();
+g.translate(heroX, heroY);
+g.rotate(-0.5);
+const hs = 6.5 * S;
+g.shadowColor = '#4dffd2'; g.shadowBlur = 40 * S;
+g.fillStyle = '#0d2b26';
+g.strokeStyle = '#4dffd2'; g.lineWidth = 5 * S;
+g.beginPath();
+g.moveTo(13 * hs, 0); g.lineTo(-9 * hs, -9 * hs); g.lineTo(-5 * hs, 0); g.lineTo(-9 * hs, 9 * hs);
+g.closePath(); g.fill(); g.stroke();
+g.fillStyle = '#b3fff0';
+g.beginPath(); g.arc(4 * hs, 0, 3.5 * hs, 0, Math.PI * 2); g.fill();
+// katana
+g.rotate(-0.7);
+g.shadowColor = '#ff4dff'; g.shadowBlur = 30 * S;
+g.strokeStyle = '#ffb3ff'; g.lineWidth = 7 * S;
+g.beginPath(); g.moveTo(8 * hs, 0); g.lineTo(42 * hs, 0); g.stroke();
+g.strokeStyle = '#ff4dff'; g.lineWidth = 3 * S;
+g.beginPath(); g.moveTo(8 * hs, 0); g.lineTo(42 * hs, 0); g.stroke();
+g.restore();
+
+// title — scale from WIDTH, break lines when portrait
+const base = 170;
+const fs = Math.min(base * S, W * 0.115);
+g.textBaseline = 'middle';
+if (!sq) {
+  g.textAlign = 'left';
+  g.save();
+  g.shadowColor = '#4dffd2'; g.shadowBlur = 34 * S;
+  g.fillStyle = '#ffffff'; g.font = '900 ' + fs + 'px "Segoe UI", Arial, sans-serif';
+  g.fillText('NEON', W * 0.045, H * 0.30);
+  g.shadowColor = '#ff4dff';
+  g.fillText('SLASHER', W * 0.045, H * 0.30 + fs * 0.95);
+  g.restore();
+  g.fillStyle = 'rgba(230,245,255,0.9)';
+  g.font = '600 ' + Math.min(48 * S, W * 0.03) + 'px "Segoe UI", Arial, sans-serif';
+  g.fillText('Slice the robot waves. Chain the combo.', W * 0.048, H * 0.30 + fs * 1.75);
+} else {
+  g.textAlign = 'center';
+  g.save();
+  g.shadowColor = '#4dffd2'; g.shadowBlur = 30 * S;
+  g.fillStyle = '#ffffff'; g.font = '900 ' + fs + 'px "Segoe UI", Arial, sans-serif';
+  g.fillText('NEON', W * 0.5, H * 0.10);
+  g.shadowColor = '#ff4dff';
+  g.fillText('SLASHER', W * 0.5, H * 0.10 + fs * 0.95);
+  g.restore();
+}
+document.title = 'ready';
+</script>
+</body>
+</html>
