@@ -12,7 +12,7 @@ const dir = join(root, 'marketing', 'rec-' + mode);
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const ctx = await browser.newContext({ viewport: size, recordVideo: { dir, size } });
 const page = await ctx.newPage();
-await page.goto('http://localhost:8486/?debug=1', { waitUntil: 'networkidle' });
+await page.goto('http://localhost:8528/?debug=1', { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 
 const W = 960, H = 640;

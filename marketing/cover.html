@@ -98,26 +98,46 @@ g.strokeStyle = 'rgba(255,77,255,0.5)'; g.lineWidth = 30 * S;
 g.beginPath(); g.arc(heroX, heroY, 190 * S, -Math.PI * 0.8, -Math.PI * 0.2); g.stroke();
 g.restore();
 
-// hero (big neon warrior)
+// hero (big hooded neon warrior — matches new in-game art)
 g.save();
 g.translate(heroX, heroY);
 g.rotate(-0.5);
 const hs = 6.5 * S;
 g.shadowColor = '#4dffd2'; g.shadowBlur = 40 * S;
-g.fillStyle = '#0d2b26';
-g.strokeStyle = '#4dffd2'; g.lineWidth = 5 * S;
+// flowing cloak
+g.fillStyle = '#0a2320'; g.strokeStyle = '#4dffd2'; g.lineWidth = 4 * S;
 g.beginPath();
-g.moveTo(13 * hs, 0); g.lineTo(-9 * hs, -9 * hs); g.lineTo(-5 * hs, 0); g.lineTo(-9 * hs, 9 * hs);
+g.moveTo(-4 * hs, -7 * hs);
+g.quadraticCurveTo(-17 * hs, -13 * hs, -24 * hs, -5 * hs);
+g.quadraticCurveTo(-19 * hs, 0, -24 * hs, 6 * hs);
+g.quadraticCurveTo(-16 * hs, 12 * hs, -4 * hs, 7 * hs);
 g.closePath(); g.fill(); g.stroke();
-g.fillStyle = '#b3fff0';
-g.beginPath(); g.arc(4 * hs, 0, 3.5 * hs, 0, Math.PI * 2); g.fill();
+// torso
+g.fillStyle = '#0d2b26';
+g.beginPath();
+g.moveTo(9 * hs, 0); g.lineTo(2 * hs, -8 * hs); g.lineTo(-6 * hs, -6 * hs); g.lineTo(-8 * hs, 0); g.lineTo(-6 * hs, 6 * hs); g.lineTo(2 * hs, 8 * hs);
+g.closePath(); g.fill(); g.stroke();
+// hood
+g.fillStyle = '#123f38';
+g.beginPath();
+g.moveTo(13 * hs, 0); g.quadraticCurveTo(10 * hs, -8 * hs, 1 * hs, -7 * hs);
+g.quadraticCurveTo(-3 * hs, 0, 1 * hs, 7 * hs); g.quadraticCurveTo(10 * hs, 8 * hs, 13 * hs, 0);
+g.closePath(); g.fill(); g.stroke();
+// glowing eyes
+g.shadowColor = '#b3fff0'; g.shadowBlur = 24 * S;
+g.fillStyle = '#d9fff6';
+g.beginPath(); g.arc(8 * hs, -2.4 * hs, 1.5 * hs, 0, Math.PI * 2); g.fill();
+g.beginPath(); g.arc(8 * hs, 2.4 * hs, 1.5 * hs, 0, Math.PI * 2); g.fill();
 // katana
 g.rotate(-0.7);
+g.strokeStyle = '#8a93a8'; g.lineWidth = 5 * S; g.shadowBlur = 0;
+g.beginPath(); g.moveTo(6 * hs, 0); g.lineTo(12 * hs, 0); g.stroke();
+g.beginPath(); g.moveTo(12 * hs, -3 * hs); g.lineTo(12 * hs, 3 * hs); g.stroke();
 g.shadowColor = '#ff4dff'; g.shadowBlur = 30 * S;
 g.strokeStyle = '#ffb3ff'; g.lineWidth = 7 * S;
-g.beginPath(); g.moveTo(8 * hs, 0); g.lineTo(42 * hs, 0); g.stroke();
+g.beginPath(); g.moveTo(12 * hs, 0); g.lineTo(42 * hs, -1.5 * hs); g.stroke();
 g.strokeStyle = '#ff4dff'; g.lineWidth = 3 * S;
-g.beginPath(); g.moveTo(8 * hs, 0); g.lineTo(42 * hs, 0); g.stroke();
+g.beginPath(); g.moveTo(12 * hs, 1.5 * hs); g.lineTo(42 * hs, 0); g.stroke();
 g.restore();
 
 // title — scale from WIDTH, break lines when portrait

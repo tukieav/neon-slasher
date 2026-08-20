@@ -25,6 +25,9 @@ let score = 0, best = 0, wave = 0;
 let hero, enemies, bullets, particles, floats, pickups, cores;
 let combo = 0, comboTimer = 0, multiplier = 1;
 let shake = 0, hurtFlash = 0, slowmo = 0, timeScale = 1;
+let hitStop = 0;           // brief freeze on hit (juice)
+let debris = [];           // sliced robot halves
+let flashes = [];          // radial light flashes (deflect etc.)
 let waveBanner = 0, waveBannerText = '';
 let secondWindUsed = false, secondWindShield = 0;
 let killsTotal = 0;
@@ -59,7 +62,7 @@ function newHero() {
     hp: s.hpMax, hpMax: s.hpMax, speed: s.speed,
     slashTimer: 0, slashCd: 0, slashAngle: 0,
     dashTimer: 0, dashCd: 0, iframes: 0,
-    trail: [], slashArcs: [],
+    trail: [], slashArcs: [], ghosts: [], breathe: Math.random() * 6, cloak: 0,
   };
 }
 
@@ -69,6 +72,7 @@ function reset() {
   enemies = []; bullets = []; particles = []; floats = []; pickups = []; cores = [];
   score = 0; wave = 0; combo = 0; comboTimer = 0; multiplier = 1;
   shake = 0; hurtFlash = 0; slowmo = 0; timeScale = 1;
+  hitStop = 0; debris = []; flashes = [];
   secondWindUsed = false; secondWindShield = 0; killsTotal = 0;
   spawnQueue = []; spawnTimer = 0;
   runCores = 0; fever = 0; feverUsedAtCombo = 0; vampireKills = 0;
@@ -190,6 +194,7 @@ function doSlash() {
       e.hp -= 1;
       e.hitFlash = 0.15;
       shake = Math.min(shake + 4, 12);
+      hitStop = Math.max(hitStop, 0.04); // 40ms hit-stop juice
       if (e.hp <= 0) { killEnemy(e); kills++; }
       else { audio.hitSound(combo); burst(e.x, e.y, e.hue, 6, 120); }
     }
@@ -207,6 +212,7 @@ function doSlash() {
       audio.deflectSound();
       addFloat(b.x, b.y, 'DEFLECT!', 130);
       burst(b.x, b.y, 130, 5, 100);
+      flashes.push({ x: b.x, y: b.y, r: 34, hue: 130, t: 0, life: 0.22 });
     }
   }
   if (kills >= 3) {
@@ -239,7 +245,20 @@ function killEnemy(e) {
   score += pts;
   addFloat(e.x, e.y, '+' + pts, e.hue);
   audio.hitSound(combo);
-  burst(e.x, e.y, e.hue, isBoss ? 40 : 14, isBoss ? 220 : 160);
+  burst(e.x, e.y, e.hue, isBoss ? 64 : 20, isBoss ? 260 : 180);
+  // sliced-in-half robot debris (PEGI-safe: robots + sparks)
+  const cutA = hero ? Math.atan2(e.y - hero.y, e.x - hero.x) + Math.PI / 2 : Math.random() * Math.PI * 2;
+  for (const side of [-1, 1]) {
+    debris.push({
+      x: e.x, y: e.y, r: e.r, hue: e.hue, type: e.type, side,
+      cutA,
+      vx: Math.cos(cutA + side * Math.PI / 2) * (70 + Math.random() * 60),
+      vy: Math.sin(cutA + side * Math.PI / 2) * (70 + Math.random() * 60) - 40,
+      rot: (Math.random() - 0.5) * 2, vr: side * (3 + Math.random() * 4),
+      t: 0, life: 0.7 + Math.random() * 0.3,
+    });
+  }
+  flashes.push({ x: e.x, y: e.y, r: isBoss ? 90 : 46, hue: e.hue, t: 0, life: isBoss ? 0.4 : 0.25 });
   // drop persistent cores currency
   const nCores = isBoss ? 5 : e.type === 'shield' || e.type === 'splitter' ? 2 : e.mini ? 0 : Math.random() < 0.55 ? 1 : 0;
   for (let i = 0; i < nCores; i++) {
@@ -379,6 +398,7 @@ function update(dt) {
     updateFx(dt);
     return;
   }
+  if (hitStop > 0) { hitStop -= dt; updateFx(dt * 0.15); return; }
   if (slowmo > 0) { slowmo -= dt; timeScale = 0.3; } else timeScale = 1;
   if (fever > 0) fever -= dt;
   hintT += dt;
@@ -399,10 +419,14 @@ function update(dt) {
     hero.dashTimer -= sdt;
     hero.x += hero.dvx * sdt; hero.y += hero.dvy * sdt;
     hero.trail.push({ x: hero.x, y: hero.y, t: 0 });
+    hero.ghosts.push({ x: hero.x, y: hero.y, aim: hero.aim, t: 0 });
+    hero.cloak = Math.min(1, hero.cloak + dt * 12);
   } else {
     hero.x += mx * heroSpeed * sdt;
     hero.y += my * heroSpeed * sdt;
     if (Math.abs(mx) + Math.abs(my) > 0.1 && Math.random() < 0.3) hero.trail.push({ x: hero.x, y: hero.y, t: 0.25 });
+    hero.cloak = Math.max(0, hero.cloak - dt * 3);
+    hero.breathe += dt;
   }
   // clamp to arena
   const hd = Math.hypot(hero.x - CX, hero.y - CY);
@@ -591,11 +615,24 @@ function updateFx(dt) {
     p.vx *= 0.96; p.vy *= 0.96;
   }
   particles = particles.filter(p => p.t < p.life);
+  for (const d of debris) {
+    d.t += dt;
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    d.vx *= 0.94; d.vy = d.vy * 0.94 + 140 * dt; // light gravity
+    d.rot += d.vr * dt;
+    // spark trail off the cut edge
+    if (Math.random() < 0.35) particles.push({ x: d.x, y: d.y, vx: (Math.random() - 0.5) * 60, vy: -Math.random() * 40, life: 0.25, t: 0, hue: 45, spring: false, r: 1.5 });
+  }
+  debris = debris.filter(d => d.t < d.life);
+  for (const fl of flashes) fl.t += dt;
+  flashes = flashes.filter(fl => fl.t < fl.life);
   for (const f of floats) { f.t += dt; f.y -= 30 * dt; }
   floats = floats.filter(f => f.t < 1.2);
   if (hero) {
     for (const tr of hero.trail) tr.t += dt;
     hero.trail = hero.trail.filter(tr => tr.t < 0.4);
+    for (const gh of hero.ghosts) gh.t += dt;
+    hero.ghosts = hero.ghosts.filter(gh => gh.t < 0.3);
     for (const a of hero.slashArcs) a.t += dt;
     hero.slashArcs = hero.slashArcs.filter(a => a.t < 0.22);
   }
@@ -612,26 +649,153 @@ function neonCircle(x, y, r, hue, glow, alpha = 1) {
   g.restore();
 }
 
+// ---------- pre-rendered tech floor (static layer, drawn once) ----------
+let floorCanvas = null;
+let circuitPaths = []; // energy flow routes for animated pulses
+function seededRand(seed) { let s = seed; return () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; }; }
+function buildFloor() {
+  floorCanvas = document.createElement('canvas');
+  floorCanvas.width = W; floorCanvas.height = H;
+  const f = floorCanvas.getContext('2d');
+  const rnd = seededRand(1337);
+  // deep gradient bg
+  const bg = f.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#04050d'); bg.addColorStop(0.55, '#070818'); bg.addColorStop(1, '#0b0620');
+  f.fillStyle = bg; f.fillRect(0, 0, W, H);
+  // faint outer grid
+  f.strokeStyle = 'rgba(50,70,160,0.06)'; f.lineWidth = 1;
+  for (let x = 0; x <= W; x += 48) { f.beginPath(); f.moveTo(x, 0); f.lineTo(x, H); f.stroke(); }
+  for (let y = 0; y <= H; y += 48) { f.beginPath(); f.moveTo(0, y); f.lineTo(W, y); f.stroke(); }
+  // arena floor: clipped tech panels
+  f.save();
+  f.beginPath(); f.arc(CX, CY, ARENA_R, 0, Math.PI * 2); f.clip();
+  const fg = f.createRadialGradient(CX, CY - 60, 40, CX, CY, ARENA_R);
+  fg.addColorStop(0, '#101a38'); fg.addColorStop(0.7, '#0b1228'); fg.addColorStop(1, '#080c1e');
+  f.fillStyle = fg; f.fillRect(CX - ARENA_R, CY - ARENA_R, ARENA_R * 2, ARENA_R * 2);
+  // hex/rect tech plates with tone variance
+  const PS = 56;
+  for (let px = CX - ARENA_R; px < CX + ARENA_R; px += PS) {
+    for (let py = CY - ARENA_R; py < CY + ARENA_R; py += PS) {
+      const v = rnd();
+      f.fillStyle = 'rgba(' + Math.round(34 + v * 30) + ',' + Math.round(52 + v * 36) + ',' + Math.round(105 + v * 48) + ',' + (0.16 + v * 0.14) + ')';
+      f.fillRect(px + 2, py + 2, PS - 4, PS - 4);
+      f.strokeStyle = 'rgba(80,120,220,0.16)'; f.lineWidth = 1;
+      f.strokeRect(px + 2, py + 2, PS - 4, PS - 4);
+      // panel details: bolts / vents on some plates
+      if (v > 0.75) {
+        f.fillStyle = 'rgba(120,170,255,0.14)';
+        f.fillRect(px + 8, py + 8, 4, 4); f.fillRect(px + PS - 12, py + 8, 4, 4);
+        f.fillRect(px + 8, py + PS - 12, 4, 4); f.fillRect(px + PS - 12, py + PS - 12, 4, 4);
+      } else if (v < 0.14) {
+        f.strokeStyle = 'rgba(90,140,255,0.12)';
+        for (let k = 0; k < 3; k++) { f.beginPath(); f.moveTo(px + 10, py + 16 + k * 10); f.lineTo(px + PS - 10, py + 16 + k * 10); f.stroke(); }
+      }
+    }
+  }
+  // circuit traces (drawn on floor + saved as flow routes)
+  circuitPaths = [];
+  for (let i = 0; i < 14; i++) {
+    const a0 = rnd() * Math.PI * 2;
+    let x = CX + Math.cos(a0) * (rnd() * ARENA_R * 0.85);
+    let y = CY + Math.sin(a0) * (rnd() * ARENA_R * 0.85);
+    const pts = [{ x, y }];
+    let dir = Math.floor(rnd() * 4) * Math.PI / 2;
+    for (let s = 0; s < 6; s++) {
+      const len = 26 + rnd() * 50;
+      x += Math.cos(dir) * len; y += Math.sin(dir) * len;
+      const d = Math.hypot(x - CX, y - CY);
+      if (d > ARENA_R - 16) break;
+      pts.push({ x, y });
+      dir += (rnd() < 0.5 ? 1 : -1) * Math.PI / 2;
+    }
+    if (pts.length < 3) continue;
+    circuitPaths.push(pts);
+    f.strokeStyle = 'rgba(60,190,255,0.13)'; f.lineWidth = 1.6;
+    f.beginPath(); f.moveTo(pts[0].x, pts[0].y);
+    for (const p of pts) f.lineTo(p.x, p.y);
+    f.stroke();
+    // solder-node dots at junctions
+    f.fillStyle = 'rgba(90,210,255,0.24)';
+    for (const p of pts) { f.beginPath(); f.arc(p.x, p.y, 2.2, 0, Math.PI * 2); f.fill(); }
+  }
+  // concentric guide rings
+  f.strokeStyle = 'rgba(80,140,255,0.10)'; f.lineWidth = 1.5;
+  for (const rr of [ARENA_R * 0.33, ARENA_R * 0.66]) { f.beginPath(); f.arc(CX, CY, rr, 0, Math.PI * 2); f.stroke(); }
+  f.restore();
+  // wall segments outside the ring (columns/struts)
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 + 0.13;
+    const wx = CX + Math.cos(a) * (ARENA_R + 22), wy = CY + Math.sin(a) * (ARENA_R + 22);
+    f.save(); f.translate(wx, wy); f.rotate(a + Math.PI / 2);
+    f.fillStyle = 'rgba(20,30,64,0.9)'; f.strokeStyle = 'rgba(90,140,255,0.35)'; f.lineWidth = 1.5;
+    f.fillRect(-14, -6, 28, 12); f.strokeRect(-14, -6, 28, 12);
+    f.fillStyle = 'rgba(120,220,255,0.5)';
+    f.fillRect(-10, -2, 5, 4); f.fillRect(5, -2, 5, 4);
+    f.restore();
+  }
+  // vignette
+  const vg = f.createRadialGradient(CX, CY, ARENA_R * 0.6, CX, CY, W * 0.72);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,5,0.55)');
+  f.fillStyle = vg; f.fillRect(0, 0, W, H);
+}
+
+function drawFloorDynamic() {
+  // animated energy pulses flowing along circuit traces
+  g.save();
+  g.beginPath(); g.arc(CX, CY, ARENA_R, 0, Math.PI * 2); g.clip();
+  for (let i = 0; i < circuitPaths.length; i++) {
+    const pts = circuitPaths[i];
+    let total = 0; const segs = [];
+    for (let s = 0; s < pts.length - 1; s++) { const L = Math.hypot(pts[s + 1].x - pts[s].x, pts[s + 1].y - pts[s].y); segs.push(L); total += L; }
+    const prog = ((tPulse * (40 + (i % 5) * 14) + i * 137) % total);
+    let acc = 0;
+    for (let s = 0; s < segs.length; s++) {
+      if (prog <= acc + segs[s]) {
+        const t = (prog - acc) / segs[s];
+        const px = pts[s].x + (pts[s + 1].x - pts[s].x) * t;
+        const py = pts[s].y + (pts[s + 1].y - pts[s].y) * t;
+        g.shadowColor = '#4dd2ff'; g.shadowBlur = 10;
+        g.fillStyle = 'rgba(140,230,255,0.9)';
+        g.beginPath(); g.arc(px, py, 2.4, 0, Math.PI * 2); g.fill();
+        g.shadowBlur = 0;
+        break;
+      }
+      acc += segs[s];
+    }
+  }
+  // neon reflections on the floor: soft pools of light under glowing actors
+  if (state === 'playing' || state === 'gameover') {
+    g.globalCompositeOperation = 'lighter';
+    const pool = (x, y, r, hue, a) => {
+      const rg = g.createRadialGradient(x, y + 6, 2, x, y + 6, r);
+      rg.addColorStop(0, 'hsla(' + hue + ',100%,60%,' + a + ')');
+      rg.addColorStop(1, 'hsla(' + hue + ',100%,60%,0)');
+      g.fillStyle = rg;
+      g.beginPath(); g.ellipse(x, y + 6, r, r * 0.45, 0, 0, Math.PI * 2); g.fill();
+    };
+    if (hero) pool(hero.x, hero.y + 10, 30, 160, 0.10);
+    for (const e of enemies) if (e.spawn <= 0) pool(e.x, e.y + e.r * 0.6, e.r * 1.8, e.hue, 0.08);
+    for (const b of bullets) pool(b.x, b.y + 4, 14, b.hue, 0.10);
+    g.globalCompositeOperation = 'source-over';
+  }
+  g.restore();
+}
+
 function render() {
   g.save();
   if (shake > 0) g.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
 
-  // bg
-  const bg = g.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#05060f'); bg.addColorStop(1, '#0c0620');
-  g.fillStyle = bg; g.fillRect(-20, -20, W + 40, H + 40);
+  // pre-rendered tech floor + animated circuit energy + neon reflections
+  if (!floorCanvas) buildFloor();
+  g.fillStyle = '#04050d'; g.fillRect(-20, -20, W + 40, H + 40);
+  g.drawImage(floorCanvas, 0, 0);
+  drawFloorDynamic();
 
-  // grid
-  g.strokeStyle = 'rgba(60,80,180,0.09)'; g.lineWidth = 1;
-  for (let x = 0; x < W; x += 48) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
-  for (let y = 0; y < H; y += 48) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
-
-  // pulsing arena
+  // pulsing arena ring (fever = golden overdrive)
   const pulse = 1 + Math.sin(tPulse * 2.2) * 0.008;
-  neonCircle(CX, CY, ARENA_R * pulse, 195, 22, 0.9);
-  neonCircle(CX, CY, ARENA_R * pulse + 8, 265, 12, 0.35);
-  g.fillStyle = 'rgba(20,30,70,0.22)';
-  g.beginPath(); g.arc(CX, CY, ARENA_R, 0, Math.PI * 2); g.fill();
+  const ringHue = fever > 0 ? 50 : 195;
+  neonCircle(CX, CY, ARENA_R * pulse, ringHue, fever > 0 ? 34 : 22, 0.9);
+  neonCircle(CX, CY, ARENA_R * pulse + 8, fever > 0 ? 35 : 265, 12, 0.35);
 
   if (state === 'playing' || state === 'gameover') {
     // pickups
@@ -678,6 +842,37 @@ function render() {
     // hero
     drawHero();
 
+    // sliced robot halves (debris)
+    for (const d of debris) {
+      const a = 1 - d.t / d.life;
+      g.save();
+      g.translate(d.x, d.y);
+      g.rotate(d.rot);
+      g.globalAlpha = a;
+      g.shadowColor = 'hsl(' + d.hue + ',100%,60%)'; g.shadowBlur = 10;
+      g.fillStyle = 'hsla(' + d.hue + ',80%,22%,0.9)';
+      g.strokeStyle = 'hsl(' + d.hue + ',100%,65%)'; g.lineWidth = 2;
+      // half-disc shape with a hot molten cut edge
+      g.beginPath(); g.arc(0, 0, d.r, d.side > 0 ? 0 : Math.PI, d.side > 0 ? Math.PI : Math.PI * 2); g.closePath();
+      g.fill(); g.stroke();
+      g.strokeStyle = 'hsla(45,100%,' + (60 + Math.sin(d.t * 30) * 20) + '%,' + a + ')';
+      g.lineWidth = 2.5; g.shadowColor = '#ffd24d'; g.shadowBlur = 12;
+      g.beginPath(); g.moveTo(-d.r, 0); g.lineTo(d.r, 0); g.stroke();
+      g.restore();
+    }
+
+    // radial light flashes (kills / deflects)
+    g.globalCompositeOperation = 'lighter';
+    for (const fl of flashes) {
+      const p = fl.t / fl.life;
+      const rg = g.createRadialGradient(fl.x, fl.y, 1, fl.x, fl.y, fl.r * (0.4 + p));
+      rg.addColorStop(0, 'hsla(' + fl.hue + ',100%,80%,' + (0.55 * (1 - p)) + ')');
+      rg.addColorStop(1, 'hsla(' + fl.hue + ',100%,60%,0)');
+      g.fillStyle = rg;
+      g.beginPath(); g.arc(fl.x, fl.y, fl.r * (0.4 + p), 0, Math.PI * 2); g.fill();
+    }
+    g.globalCompositeOperation = 'source-over';
+
     // particles
     for (const p of particles) {
       const a = 1 - p.t / p.life;
@@ -715,6 +910,19 @@ function render() {
 
   // HUD
   if (state === 'playing' || state === 'gameover') {
+    // cyberpunk HUD plates (chamfered, subtle)
+    g.save();
+    g.fillStyle = 'rgba(8,14,32,0.55)';
+    g.strokeStyle = 'rgba(90,180,255,0.35)'; g.lineWidth = 1.5;
+    // score plate (top-left, angled right edge)
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(230, 0); g.lineTo(206, 70); g.lineTo(0, 70); g.closePath(); g.fill(); g.stroke();
+    // wave plate (top-right, angled left edge)
+    g.beginPath(); g.moveTo(W, 0); g.lineTo(W - 190, 0); g.lineTo(W - 166, 84); g.lineTo(W, 84); g.closePath(); g.fill(); g.stroke();
+    // accent ticks
+    g.strokeStyle = 'rgba(77,255,210,0.6)'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(0, 70); g.lineTo(60, 70); g.stroke();
+    g.beginPath(); g.moveTo(W, 84); g.lineTo(W - 60, 84); g.stroke();
+    g.restore();
     g.textAlign = 'left'; g.textBaseline = 'top';
     g.fillStyle = '#e8f4ff'; g.font = '700 26px "Segoe UI", sans-serif';
     g.fillText('SCORE ' + score, 18, 14);
@@ -802,6 +1010,21 @@ function render() {
     g.fillStyle = 'rgba(80,200,255,0.08)';
     g.fillRect(0, 0, W, H);
   }
+  // combo fever: full-screen neon overdrive
+  if (fever > 0 && state === 'playing') {
+    const fa = Math.min(1, fever);
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const og = g.createRadialGradient(CX, CY, ARENA_R * 0.5, CX, CY, W * 0.7);
+    og.addColorStop(0, 'rgba(255,220,80,0)');
+    og.addColorStop(1, 'rgba(255,180,40,' + (0.10 * fa + Math.sin(tPulse * 8) * 0.03) + ')');
+    g.fillStyle = og; g.fillRect(0, 0, W, H);
+    // scanline energy bars racing along top & bottom edges
+    g.fillStyle = 'rgba(255,225,77,' + 0.5 * fa + ')';
+    const bx = (tPulse * 900) % (W + 240) - 120;
+    g.fillRect(bx, 0, 120, 3); g.fillRect(W - bx - 120, H - 3, 120, 3);
+    g.restore();
+  }
 
   if (state === 'menu') renderMenu();
   if (state === 'shop') renderShop();
@@ -829,6 +1052,12 @@ function heartPath(x, y, s) {
 
 function drawHero() {
   const h = hero;
+  const kHue = KATANAS[meta.katana].hue;
+  // dash afterimages (ghosting)
+  for (const gh of h.ghosts) {
+    const a = (1 - gh.t / 0.3) * 0.4;
+    drawWarrior(gh.x, gh.y, gh.aim, { alpha: a, hue: 160, ghost: true, kHue, breathe: 0, cloak: 1, slash: 0 });
+  }
   g.save();
   g.translate(h.x, h.y);
   // i-frames blink / shield
@@ -837,29 +1066,13 @@ function drawHero() {
       neonCircle(0, 0, 22, secondWindShield > 0 ? 130 : 195, 14, 0.6);
     }
   }
-  g.rotate(h.aim);
-  // body
-  g.shadowColor = '#4dffd2'; g.shadowBlur = 18;
-  g.fillStyle = '#0d2b26';
-  g.strokeStyle = '#4dffd2'; g.lineWidth = 2.5;
-  g.beginPath();
-  g.moveTo(13, 0); g.lineTo(-9, -9); g.lineTo(-5, 0); g.lineTo(-9, 9);
-  g.closePath(); g.fill(); g.stroke();
-  // head glow
-  g.fillStyle = '#b3fff0';
-  g.beginPath(); g.arc(4, 0, 3.5, 0, Math.PI * 2); g.fill();
-  // katana (cosmetic hue from selected skin)
-  const kHue = KATANAS[meta.katana].hue;
-  const sl = h.slashTimer > 0 ? 1 : 0;
-  g.save();
-  g.rotate(sl ? (-1 + (1 - h.slashTimer / 0.14) * 2) * 1.05 : 0.45);
-  g.shadowColor = 'hsl(' + kHue + ',100%,65%)'; g.shadowBlur = 14;
-  g.strokeStyle = 'hsl(' + kHue + ',100%,85%)'; g.lineWidth = 3;
-  g.beginPath(); g.moveTo(8, 0); g.lineTo(38, 0); g.stroke();
-  g.strokeStyle = 'hsl(' + kHue + ',100%,65%)'; g.lineWidth = 1.2;
-  g.beginPath(); g.moveTo(8, 0); g.lineTo(38, 0); g.stroke();
   g.restore();
-  g.restore();
+  drawWarrior(h.x, h.y, h.aim, {
+    alpha: 1, hue: 160, kHue,
+    breathe: h.breathe, cloak: h.cloak,
+    slash: h.slashTimer > 0 ? (1 - h.slashTimer / 0.14) : -1,
+    fever: fever > 0,
+  });
   // slash arcs
   for (const a of hero.slashArcs) {
     const p = a.t / 0.22;
@@ -871,14 +1084,85 @@ function drawHero() {
     g.beginPath();
     g.arc(0, 0, 55 + p * 30, a.a - Math.PI / 3, a.a + Math.PI / 3);
     g.stroke();
+    // secondary inner light arc for a layered slash
+    g.strokeStyle = 'hsla(' + kHue + ',100%,92%,' + (1 - p) * 0.8 + ')';
+    g.lineWidth = 3 * (1 - p) + 1;
+    g.beginPath();
+    g.arc(0, 0, 44 + p * 26, a.a - Math.PI / 3.4, a.a + Math.PI / 3.4);
+    g.stroke();
     g.restore();
   }
+}
+
+// hooded warrior sprite (procedural): cloak, hood, glowing eyes, katana
+// opts: {alpha, hue, kHue, breathe, cloak (0..1 dash flutter), slash (-1 idle | 0..1 anim), ghost, fever}
+function drawWarrior(x, y, aim, opts) {
+  const o = opts;
+  const br = o.breathe != null ? Math.sin(o.breathe * 2.4) : 0; // idle breathing
+  const scale = 1.25 * (1 + br * 0.02); // bigger presence on the arena
+  g.save();
+  g.translate(x, y);
+  g.rotate(aim);
+  g.scale(scale, scale);
+  g.globalAlpha = o.alpha;
+  const bodyGlow = o.fever ? '#ffe14d' : '#4dffd2';
+  // cloak: flowing behind, flutter amplitude driven by o.cloak (dash) + gentle idle sway
+  const flut = 0.35 + (o.cloak || 0) * 1.4;
+  g.shadowColor = bodyGlow; g.shadowBlur = o.ghost ? 6 : 14;
+  g.fillStyle = o.ghost ? 'rgba(30,90,80,0.55)' : '#0a2320';
+  g.strokeStyle = o.ghost ? 'rgba(77,255,210,0.5)' : bodyGlow;
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(-4, -7);
+  const t = tPulse * (10 + (o.cloak || 0) * 14);
+  g.quadraticCurveTo(-14 - flut * 4, -10 - Math.sin(t) * 3 * flut, -19 - flut * 6, -4 + Math.sin(t * 1.3) * 3 * flut);
+  g.quadraticCurveTo(-16 - flut * 5, 0, -19 - flut * 6, 4 + Math.sin(t * 1.1 + 2) * 3 * flut);
+  g.quadraticCurveTo(-14 - flut * 4, 10 + Math.sin(t + 1) * 3 * flut, -4, 7);
+  g.closePath(); g.fill(); g.stroke();
+  // torso (angular chest plate)
+  g.fillStyle = o.ghost ? 'rgba(20,70,62,0.6)' : '#0d2b26';
+  g.beginPath();
+  g.moveTo(9, 0); g.lineTo(2, -8); g.lineTo(-6, -6); g.lineTo(-8, 0); g.lineTo(-6, 6); g.lineTo(2, 8);
+  g.closePath(); g.fill(); g.stroke();
+  // chest energy core line
+  g.strokeStyle = o.fever ? '#fff3b0' : '#9fffe8'; g.lineWidth = 1.4;
+  g.beginPath(); g.moveTo(3, -3); g.lineTo(3, 3); g.stroke();
+  // hood (pointed, over the head)
+  g.fillStyle = o.ghost ? 'rgba(16,58,52,0.7)' : '#123f38';
+  g.strokeStyle = o.ghost ? 'rgba(77,255,210,0.5)' : bodyGlow; g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(13, 0); g.quadraticCurveTo(10, -8, 1, -7);
+  g.quadraticCurveTo(-3, 0, 1, 7); g.quadraticCurveTo(10, 8, 13, 0);
+  g.closePath(); g.fill(); g.stroke();
+  // glowing visor eyes inside the hood
+  g.shadowBlur = 10; g.shadowColor = o.fever ? '#ffe14d' : '#b3fff0';
+  g.fillStyle = o.fever ? '#fff6c9' : '#d9fff6';
+  g.beginPath(); g.arc(8, -2.4, 1.4, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(8, 2.4, 1.4, 0, Math.PI * 2); g.fill();
+  // katana: rest pose or slash sweep
+  const kh = o.kHue != null ? o.kHue : 160;
+  g.save();
+  if (o.slash >= 0) g.rotate((-1 + o.slash * 2) * 1.05);
+  else g.rotate(0.45 + br * 0.04);
+  // grip + guard
+  g.shadowBlur = 0;
+  g.strokeStyle = o.ghost ? 'rgba(160,160,180,0.4)' : '#8a93a8'; g.lineWidth = 2.5;
+  g.beginPath(); g.moveTo(6, 0); g.lineTo(12, 0); g.stroke();
+  g.beginPath(); g.moveTo(12, -3); g.lineTo(12, 3); g.stroke();
+  // blade: bright core + neon edge glow
+  g.shadowColor = 'hsl(' + kh + ',100%,65%)'; g.shadowBlur = o.ghost ? 6 : 16;
+  g.strokeStyle = 'hsl(' + kh + ',100%,86%)'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(12, 0); g.lineTo(42, -1.5); g.stroke();
+  g.strokeStyle = 'hsla(' + kh + ',100%,65%,0.9)'; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(12, 1.5); g.lineTo(42, 0); g.stroke();
+  g.restore();
+  g.restore();
 }
 
 function drawEnemy(e) {
   g.save();
   g.translate(e.x, e.y);
-  const sp = e.spawn > 0 ? Math.max(0.1, 1 - e.spawn / 0.6) : 1;
+  const sp = (e.spawn > 0 ? Math.max(0.1, 1 - e.spawn / 0.6) : 1) * 1.18; // slightly larger visual presence
   g.scale(sp, sp);
   g.globalAlpha = e.spawn > 0 ? 0.5 : 1;
   const flash = e.hitFlash > 0;
@@ -887,34 +1171,105 @@ function drawEnemy(e) {
   g.strokeStyle = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,65%)';
   g.fillStyle = 'hsla(' + e.hue + ',80%,20%,0.85)';
   g.lineWidth = 2.5;
+  const walk = Math.sin(e.t * 9); // shared stride cycle
+  const eyeCol = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,72%)';
   if (e.type === 'melee') {
-    g.rotate(e.t * 1.5);
+    // humanoid saw-bot: faces the hero, stomping legs, spinning saw arm
+    const face = Math.atan2(hero.y - e.y, hero.x - e.x);
+    g.rotate(face);
+    const R = e.r;
+    // stomping legs
+    g.strokeStyle = flash ? '#fff' : 'hsla(' + e.hue + ',70%,45%,0.9)'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(-R * 0.4, -R * 0.4); g.lineTo(-R * 0.75 - walk * 3, -R * 0.75); g.stroke();
+    g.beginPath(); g.moveTo(-R * 0.4, R * 0.4); g.lineTo(-R * 0.75 + walk * 3, R * 0.75); g.stroke();
+    // torso
+    g.strokeStyle = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,65%)'; g.lineWidth = 2.5;
     g.beginPath();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const px = Math.cos(a) * e.r, py = Math.sin(a) * e.r;
-      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    g.moveTo(R * 0.6, 0); g.lineTo(R * 0.15, -R * 0.7); g.lineTo(-R * 0.6, -R * 0.5);
+    g.lineTo(-R * 0.45, 0); g.lineTo(-R * 0.6, R * 0.5); g.lineTo(R * 0.15, R * 0.7);
+    g.closePath(); g.fill(); g.stroke();
+    // spinning saw blade held forward
+    g.save(); g.translate(R * 1.05, 0); g.rotate(e.t * 14);
+    g.strokeStyle = flash ? '#fff' : 'hsl(' + e.hue + ',100%,75%)'; g.lineWidth = 2;
+    g.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const r1 = R * 0.42, r2 = R * 0.62;
+      g.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+      g.lineTo(Math.cos(a + 0.3) * r2, Math.sin(a + 0.3) * r2);
     }
-    g.closePath(); g.fill(); g.stroke();
-    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
-    g.beginPath(); g.arc(0, 0, 4, 0, Math.PI * 2); g.fill();
+    g.stroke();
+    g.beginPath(); g.arc(0, 0, R * 0.42, 0, Math.PI * 2); g.stroke();
+    g.restore();
+    // single glowing eye
+    g.fillStyle = eyeCol; g.shadowBlur = 12;
+    g.beginPath(); g.arc(R * 0.2, 0, e.mini ? 2 : 3.2, 0, Math.PI * 2); g.fill();
   } else if (e.type === 'shooter') {
-    g.rotate(Math.sin(e.t * 2) * 0.3);
-    g.beginPath(); g.rect(-e.r, -e.r, e.r * 2, e.r * 2);
-    g.fill(); g.stroke();
-    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
-    g.beginPath(); g.arc(0, 0, 5, 0, Math.PI * 2); g.fill();
+    // turret on strut legs, twin barrels track the hero, charge glow before firing
+    const face = Math.atan2(hero.y - e.y, hero.x - e.x);
+    const R = e.r;
+    // three strut legs with stepping bob
+    g.strokeStyle = flash ? '#fff' : 'hsla(' + e.hue + ',70%,50%,0.9)'; g.lineWidth = 2.5;
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + Math.PI / 6;
+      const bob = Math.sin(e.t * 9 + i * 2.1) * 2;
+      g.beginPath(); g.moveTo(Math.cos(a) * R * 0.4, Math.sin(a) * R * 0.4);
+      g.lineTo(Math.cos(a) * R * 1.15, Math.sin(a) * R * 1.15 + bob); g.stroke();
+      g.beginPath(); g.arc(Math.cos(a) * R * 1.15, Math.sin(a) * R * 1.15 + bob, 2, 0, Math.PI * 2); g.stroke();
+    }
+    // rotating turret head
+    g.save(); g.rotate(face);
+    g.beginPath(); g.arc(0, 0, R * 0.75, 0, Math.PI * 2); g.fill(); g.stroke();
+    // twin barrels
+    g.strokeStyle = flash ? '#fff' : 'hsl(' + e.hue + ',90%,60%)'; g.lineWidth = 3.5;
+    g.beginPath(); g.moveTo(R * 0.3, -4); g.lineTo(R * 1.25, -4); g.stroke();
+    g.beginPath(); g.moveTo(R * 0.3, 4); g.lineTo(R * 1.25, 4); g.stroke();
+    // muzzle charge glow as fireCd approaches 0
+    const chg = Math.max(0, 1 - e.fireCd / 0.6);
+    if (chg > 0) {
+      g.fillStyle = 'hsla(' + e.hue + ',100%,75%,' + chg + ')';
+      g.shadowBlur = 16;
+      g.beginPath(); g.arc(R * 1.3, -4, 3 * chg, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(R * 1.3, 4, 3 * chg, 0, Math.PI * 2); g.fill();
+    }
+    g.restore();
+    // sensor eye
+    g.fillStyle = eyeCol; g.shadowBlur = 10;
+    g.beginPath(); g.arc(0, 0, 3.5, 0, Math.PI * 2); g.fill();
   } else if (e.type === 'kamikaze') {
-    g.rotate(e.t * 6);
-    g.beginPath();
-    g.moveTo(0, -e.r * 1.3); g.lineTo(e.r, e.r); g.lineTo(-e.r, e.r);
-    g.closePath(); g.fill(); g.stroke();
-    // warning pulse
+    // rolling bomb-sphere with blinking red core & countdown ticks
     const d = Math.hypot(e.x - hero.x, e.y - hero.y);
-    if (d < 130) { g.globalAlpha = 0.5 + Math.sin(e.t * 20) * 0.5; g.strokeStyle = '#ff3333'; g.stroke(); }
+    const danger = Math.max(0, 1 - d / 180);
+    const blinkHz = 6 + danger * 22;
+    const blink = Math.sin(e.t * blinkHz) > 0;
+    g.rotate(e.t * 7); // rolling
+    g.beginPath(); g.arc(0, 0, e.r, 0, Math.PI * 2); g.fill(); g.stroke();
+    // rolling tread band
+    g.strokeStyle = flash ? '#fff' : 'hsla(' + e.hue + ',80%,50%,0.8)'; g.lineWidth = 1.8;
+    g.beginPath(); g.ellipse(0, 0, e.r, e.r * 0.42, 0, 0, Math.PI * 2); g.stroke();
+    // countdown tick marks around the shell
+    g.strokeStyle = 'hsla(0,100%,60%,' + (0.3 + danger * 0.7) + ')'; g.lineWidth = 2;
+    const ticks = Math.max(1, Math.round(4 - danger * 3));
+    for (let i = 0; i < 4; i++) {
+      if (i < ticks) continue; // ticks disappear as it closes in
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      g.beginPath(); g.moveTo(Math.cos(a) * e.r * 0.7, Math.sin(a) * e.r * 0.7);
+      g.lineTo(Math.cos(a) * e.r, Math.sin(a) * e.r); g.stroke();
+    }
+    // blinking red core
+    g.fillStyle = blink ? '#ff3b3b' : 'hsla(0,90%,40%,0.6)';
+    g.shadowColor = '#ff3b3b'; g.shadowBlur = blink ? 18 : 6;
+    g.beginPath(); g.arc(0, 0, e.r * 0.42, 0, Math.PI * 2); g.fill();
+    if (danger > 0.4 && blink) { g.strokeStyle = '#ff5555'; g.lineWidth = 2; g.beginPath(); g.arc(0, 0, e.r + 4, 0, Math.PI * 2); g.stroke(); }
   } else if (e.type === 'shield') {
-    // hexagon body + glowing shield arc facing the hero
+    // heavy walker with a projected energy shield wall in front
     g.rotate(e.face || 0);
+    const R = e.r;
+    // stomping legs
+    g.strokeStyle = flash ? '#fff' : 'hsla(' + e.hue + ',70%,45%,0.9)'; g.lineWidth = 3.5;
+    g.beginPath(); g.moveTo(-R * 0.3, -R * 0.5); g.lineTo(-R * 0.8 - walk * 2.5, -R * 0.85); g.stroke();
+    g.beginPath(); g.moveTo(-R * 0.3, R * 0.5); g.lineTo(-R * 0.8 + walk * 2.5, R * 0.85); g.stroke();
+    g.strokeStyle = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,65%)'; g.lineWidth = 2.5;
     g.beginPath();
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
@@ -922,26 +1277,94 @@ function drawEnemy(e) {
       if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
     }
     g.closePath(); g.fill(); g.stroke();
-    // shield arc (front)
-    g.strokeStyle = '#b0ffce'; g.lineWidth = 4;
-    g.shadowBlur = 20;
-    g.beginPath(); g.arc(0, 0, e.r + 4, -Math.PI * 0.45, Math.PI * 0.45); g.stroke();
-    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
-    g.beginPath(); g.arc(0, 0, 4, 0, Math.PI * 2); g.fill();
+    // projected hexcell energy shield (translucent plane in front)
+    const shimmer = 0.5 + Math.sin(e.t * 6) * 0.2;
+    g.fillStyle = 'hsla(' + e.hue + ',100%,65%,' + shimmer * 0.16 + ')';
+    g.strokeStyle = 'hsla(' + e.hue + ',100%,75%,' + shimmer + ')'; g.lineWidth = 3.5;
+    g.shadowBlur = 22;
+    g.beginPath(); g.arc(0, 0, e.r + 7, -Math.PI * 0.45, Math.PI * 0.45); 
+    g.arc(0, 0, e.r + 1, Math.PI * 0.45, -Math.PI * 0.45, true);
+    g.closePath(); g.fill(); g.stroke();
+    // emitter studs
+    g.fillStyle = '#d9ffe9';
+    for (const sa of [-0.35, 0, 0.35]) {
+      g.beginPath(); g.arc(Math.cos(sa * Math.PI) * e.r * 0.85, Math.sin(sa * Math.PI) * e.r * 0.85, 2, 0, Math.PI * 2); g.fill();
+    }
+    // eye
+    g.fillStyle = eyeCol; g.shadowBlur = 10;
+    g.beginPath(); g.arc(e.r * 0.25, 0, 3.5, 0, Math.PI * 2); g.fill();
   } else if (e.type === 'splitter') {
-    g.rotate(Math.sin(e.t * 3) * 0.4);
-    g.beginPath(); g.arc(-6, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
-    g.beginPath(); g.arc(6, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
-    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
-    g.beginPath(); g.arc(-6, 0, 3, 0, Math.PI * 2); g.fill();
-    g.beginPath(); g.arc(6, 0, 3, 0, Math.PI * 2); g.fill();
+    // segmented crawler: two pods joined by pulsing energy coupling
+    const face2 = Math.atan2(hero.y - e.y, hero.x - e.x);
+    g.rotate(face2 + Math.sin(e.t * 3) * 0.25);
+    const gap = 6 + Math.sin(e.t * 5) * 1.5;
+    // energy coupling
+    g.strokeStyle = 'hsla(' + e.hue + ',100%,70%,' + (0.5 + Math.sin(e.t * 10) * 0.3) + ')';
+    g.lineWidth = 3; g.shadowBlur = 16;
+    g.beginPath(); g.moveTo(-gap + 2, 0); g.lineTo(gap - 2, 0); g.stroke();
+    g.strokeStyle = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,65%)'; g.lineWidth = 2.5; g.shadowBlur = flash ? 26 : 14;
+    for (const s of [-1, 1]) {
+      g.save(); g.translate(s * gap, 0); g.rotate(s * e.t * 2);
+      // pod = rounded segment with plate lines
+      g.beginPath(); g.arc(0, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.strokeStyle = 'hsla(' + e.hue + ',80%,55%,0.7)'; g.lineWidth = 1.4;
+      g.beginPath(); g.moveTo(-e.r * 0.45, -3); g.lineTo(e.r * 0.45, -3); g.stroke();
+      g.beginPath(); g.moveTo(-e.r * 0.45, 3); g.lineTo(e.r * 0.45, 3); g.stroke();
+      g.strokeStyle = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,65%)'; g.lineWidth = 2.5;
+      // little crawler feet
+      const wob = Math.sin(e.t * 12 + s) * 2;
+      g.beginPath(); g.moveTo(0, -e.r * 0.62); g.lineTo(wob, -e.r * 0.85); g.stroke();
+      g.beginPath(); g.moveTo(0, e.r * 0.62); g.lineTo(-wob, e.r * 0.85); g.stroke();
+      g.fillStyle = eyeCol; g.shadowBlur = 8;
+      g.beginPath(); g.arc(0, 0, 3, 0, Math.PI * 2); g.fill();
+      g.fillStyle = 'hsla(' + e.hue + ',80%,20%,0.85)';
+      g.restore();
+    }
   } else if (e.type === 'twin') {
-    g.rotate(e.t * 1.2);
+    // TWIN CORE: reactor sphere with double gyro rings + orbiting shards + aura
+    // pulsing aura
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const ar = e.r * (1.6 + Math.sin(e.t * 3) * 0.15);
+    const ag = g.createRadialGradient(0, 0, e.r * 0.4, 0, 0, ar);
+    ag.addColorStop(0, 'hsla(' + e.hue + ',100%,60%,0.25)');
+    ag.addColorStop(1, 'hsla(' + e.hue + ',100%,60%,0)');
+    g.fillStyle = ag; g.beginPath(); g.arc(0, 0, ar, 0, Math.PI * 2); g.fill();
+    g.restore();
+    g.shadowColor = 'hsl(' + e.hue + ',100%,60%)'; g.shadowBlur = flash ? 26 : 18;
+    // core
     g.beginPath(); g.arc(0, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
-    g.beginPath(); g.ellipse(0, 0, e.r, e.r * 0.38, 0, 0, Math.PI * 2); g.stroke();
-    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
-    g.beginPath(); g.arc(0, 0, 6, 0, Math.PI * 2); g.fill();
+    // twin gyro rings, counter-rotating
+    g.save(); g.rotate(e.t * 1.6);
+    g.beginPath(); g.ellipse(0, 0, e.r, e.r * 0.34, 0, 0, Math.PI * 2); g.stroke(); g.restore();
+    g.save(); g.rotate(-e.t * 1.6 + Math.PI / 3);
+    g.strokeStyle = flash ? '#fff' : 'hsl(' + ((e.hue + 40) % 360) + ',100%,70%)';
+    g.beginPath(); g.ellipse(0, 0, e.r, e.r * 0.34, 0, 0, Math.PI * 2); g.stroke(); g.restore();
+    // orbiting shards
+    for (let i = 0; i < 3; i++) {
+      const a = e.t * 2.4 + (i / 3) * Math.PI * 2;
+      const sx = Math.cos(a) * e.r * 1.25, sy = Math.sin(a) * e.r * 1.25;
+      g.fillStyle = 'hsl(' + e.hue + ',100%,75%)';
+      g.save(); g.translate(sx, sy); g.rotate(a);
+      g.beginPath(); g.moveTo(4, 0); g.lineTo(-3, -3); g.lineTo(-3, 3); g.closePath(); g.fill();
+      g.restore();
+    }
+    // twin glowing cores inside
+    g.fillStyle = flash ? '#fff' : 'hsl(' + e.hue + ',100%,75%)'; g.shadowBlur = 14;
+    const cw = Math.sin(e.t * 8) * 1.5;
+    g.beginPath(); g.arc(-5, cw, 4, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(5, -cw, 4, 0, Math.PI * 2); g.fill();
   } else if (e.type === 'boss') {
+    // mini-boss: heavy octo-walker with rotating armor and inner reactor
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    const ar2 = e.r * (1.4 + Math.sin(e.t * 2.4) * 0.1);
+    const ag2 = g.createRadialGradient(0, 0, e.r * 0.5, 0, 0, ar2);
+    ag2.addColorStop(0, 'hsla(' + e.hue + ',100%,60%,0.18)');
+    ag2.addColorStop(1, 'hsla(' + e.hue + ',100%,60%,0)');
+    g.fillStyle = ag2; g.beginPath(); g.arc(0, 0, ar2, 0, Math.PI * 2); g.fill();
+    g.restore();
+    g.shadowColor = 'hsl(' + e.hue + ',100%,60%)'; g.shadowBlur = flash ? 26 : 16;
     g.rotate(e.t * 0.6);
     g.beginPath();
     for (let i = 0; i < 8; i++) {
@@ -951,8 +1374,21 @@ function drawEnemy(e) {
       if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
     }
     g.closePath(); g.fill(); g.stroke();
-    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
-    g.beginPath(); g.arc(0, 0, 9, 0, Math.PI * 2); g.fill();
+    // inner counter-rotating armor ring
+    g.save(); g.rotate(-e.t * 1.8);
+    g.strokeStyle = flash ? '#fff' : 'hsla(' + e.hue + ',100%,70%,0.8)'; g.lineWidth = 2;
+    g.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      g.moveTo(Math.cos(a) * e.r * 0.5, Math.sin(a) * e.r * 0.5);
+      g.lineTo(Math.cos(a + 0.5) * e.r * 0.5, Math.sin(a + 0.5) * e.r * 0.5);
+    }
+    g.stroke(); g.restore();
+    // reactor eye (brightens when charging)
+    const chg2 = e.charging > 0 ? 1 : Math.max(0, 1 - e.chargeCd / 1);
+    g.fillStyle = 'hsl(' + e.hue + ',100%,' + (60 + chg2 * 30) + '%)';
+    g.shadowBlur = 14 + chg2 * 14;
+    g.beginPath(); g.arc(0, 0, 9 + chg2 * 2, 0, Math.PI * 2); g.fill();
   }
   g.restore();
   // boss hp bar
@@ -969,7 +1405,17 @@ function btn(x, y, w2, h2, text, hue) {
   g.shadowColor = 'hsl(' + hue + ',100%,60%)'; g.shadowBlur = 18;
   g.fillStyle = 'hsla(' + hue + ',80%,25%,0.9)';
   g.strokeStyle = 'hsl(' + hue + ',100%,65%)'; g.lineWidth = 2.5;
-  roundRect(x - w2 / 2, y - h2 / 2, w2, h2, 12); g.fill(); g.stroke();
+  // cyberpunk chamfered button (angled corners)
+  const ch = Math.min(12, h2 * 0.32);
+  const L = x - w2 / 2, T = y - h2 / 2, R2 = x + w2 / 2, B = y + h2 / 2;
+  g.beginPath();
+  g.moveTo(L + ch, T); g.lineTo(R2, T); g.lineTo(R2, B - ch); g.lineTo(R2 - ch, B);
+  g.lineTo(L, B); g.lineTo(L, T + ch);
+  g.closePath(); g.fill(); g.stroke();
+  // accent notch lines
+  g.strokeStyle = 'hsla(' + hue + ',100%,80%,0.8)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(L + 6, B - 4); g.lineTo(L + 18, B - 4); g.stroke();
+  g.beginPath(); g.moveTo(R2 - 18, T + 4); g.lineTo(R2 - 6, T + 4); g.stroke();
   g.fillStyle = '#ffffff'; g.font = '800 ' + Math.floor(h2 * 0.42) + 'px "Segoe UI", sans-serif';
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.fillText(text, x, y + 1);
@@ -990,13 +1436,43 @@ function roundRect(x, y, w2, h2, r) {
 let uiButtons = {};
 function renderMenu() {
   g.textAlign = 'center'; g.textBaseline = 'middle';
+  // animated warrior showcase: slow orbit walk + periodic slash
+  const mt = tPulse;
+  const orbA = mt * 0.42;
+  const showX = CX + Math.cos(orbA) * 250;
+  const showY = CY + Math.sin(orbA) * 190;
+  const slashCycle = (mt % 2.4) / 2.4;
+  const menuSlash = slashCycle < 0.09 ? slashCycle / 0.09 : -1;
+  drawWarrior(showX, showY, orbA + Math.PI / 2, {
+    alpha: 1, hue: 160, kHue: KATANAS[meta.katana].hue,
+    breathe: mt, cloak: 0.25 + Math.abs(Math.sin(mt * 0.7)) * 0.3,
+    slash: menuSlash,
+  });
   g.save();
   g.shadowColor = '#4dffd2'; g.shadowBlur = 30;
   g.fillStyle = '#ffffff'; g.font = '900 72px "Segoe UI", sans-serif';
+  // glitch accent: occasional RGB-split jitter on the title
+  const glitch = Math.sin(mt * 1.7) > 0.96;
+  if (glitch) {
+    g.fillStyle = 'rgba(255,60,120,0.6)';
+    g.fillText('NEON', CX + 3, CY - 168);
+    g.fillStyle = 'rgba(60,220,255,0.6)';
+    g.fillText('NEON', CX - 3, CY - 166);
+    g.fillStyle = '#ffffff';
+  }
   g.fillText('NEON', CX, CY - 168);
   g.shadowColor = '#ff4dff';
+  if (glitch) {
+    g.fillStyle = 'rgba(60,220,255,0.6)';
+    g.fillText('SLASHER', CX - 3, CY - 96);
+    g.fillStyle = '#ffffff';
+  }
   g.fillText('SLASHER', CX, CY - 98);
   g.restore();
+  // subtitle divider slashes
+  g.strokeStyle = 'rgba(77,255,210,0.5)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(CX - 190, CY - 62); g.lineTo(CX - 150, CY - 62); g.stroke();
+  g.beginPath(); g.moveTo(CX + 150, CY - 62); g.lineTo(CX + 190, CY - 62); g.stroke();
   g.fillStyle = 'rgba(190,220,255,0.85)'; g.font = '600 18px "Segoe UI", sans-serif';
   g.fillText('WASD move · Mouse aim · Click slash · Space dash', CX, CY - 44);
   g.fillText('Deflect bullets with your blade. Survive the waves.', CX, CY - 18);

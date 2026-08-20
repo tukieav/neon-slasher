@@ -22,13 +22,13 @@ for (const c of covers) {
 
 // gameplay screenshots — play via debug hook, capture combo moments
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
-await page.goto('http://localhost:8486/?debug=1', { waitUntil: 'networkidle' });
+await page.goto('http://localhost:8528/?debug=1', { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 const W = 960, H = 640;
 const bbox = await page.locator('#game').boundingBox();
 const gx = (x) => bbox.x + x * (bbox.width / W);
 const gy = (y) => bbox.y + y * (bbox.height / H);
-await page.mouse.click(gx(W/2), gy(H/2 + 90)); // PLAY
+await page.evaluate(() => window.__astro.startGame());
 await page.waitForTimeout(1500);
 
 async function slashNearest() {
