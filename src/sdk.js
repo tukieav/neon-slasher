@@ -22,12 +22,22 @@ export async function initSDK() {
 
 export function sdkAvailable() { return inited; }
 
+let lastGp = 0;
 export function gameplayStart() {
-  try { if (sdk) sdk.game.gameplayStart(); } catch (e) {}
+  // SDK throttles gameplay calls to 1/s and logs a console error — defer if needed
+  const now = Date.now();
+  const wait = Math.max(0, 1100 - (now - lastGp));
+  lastGp = now + wait;
+  const call = () => { try { if (sdk) sdk.game.gameplayStart(); } catch (e) {} };
+  if (wait > 0) setTimeout(call, wait); else call();
 }
 
 export function gameplayStop() {
-  try { if (sdk) sdk.game.gameplayStop(); } catch (e) {}
+  const now = Date.now();
+  const wait = Math.max(0, 1100 - (now - lastGp));
+  lastGp = now + wait;
+  const call = () => { try { if (sdk) sdk.game.gameplayStop(); } catch (e) {} };
+  if (wait > 0) setTimeout(call, wait); else call();
 }
 
 export function loadingStart() {
@@ -38,7 +48,12 @@ export function loadingStop() {
   try { if (sdk) sdk.game.loadingStop(); } catch (e) {}
 }
 
+let lastHappy = 0;
 export function happytime() {
+  // SDK throttles happytime() to 1/s and logs a console error — gate locally
+  const now = Date.now();
+  if (now - lastHappy < 1500) return;
+  lastHappy = now;
   try { if (sdk) sdk.game.happytime(); } catch (e) {}
 }
 
@@ -62,6 +77,22 @@ export function getMuteSetting() {
 
 export function onSettingsChange(fn) {
   try { if (sdk) sdk.game.addSettingsChangeListener(fn); } catch (e) {}
+}
+
+// Generic persistent data: SDK data module (cross-device) with localStorage fallback
+export function loadData(key) {
+  try {
+    if (sdk) {
+      const v = sdk.data.getItem(key);
+      if (v != null) return v;
+    }
+  } catch (e) {}
+  try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+export function saveData(key, val) {
+  try { if (sdk) sdk.data.setItem(key, val); } catch (e) {}
+  try { localStorage.setItem(key, val); } catch (e) {}
 }
 
 // Persistent best score: SDK data module (cross-device) with localStorage fallback

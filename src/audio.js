@@ -116,3 +116,73 @@ export function gameOverSound() {
   ensureCtx();
   [392, 330, 262, 196].forEach((f, i) => tone(f, 0.4, 'sawtooth', 0.15, i * 0.15));
 }
+
+// combo fever activation
+export function feverSound() {
+  ensureCtx();
+  [440, 554, 659, 880, 1109].forEach((f, i) => tone(f, 0.18, 'square', 0.18, i * 0.05));
+}
+
+// core pickup — short bright blip
+export function coreSound() {
+  ensureCtx();
+  tone(988, 0.09, 'triangle', 0.14);
+  tone(1319, 0.07, 'sine', 0.1, 0.03);
+}
+
+// shop purchase
+export function buySound() {
+  ensureCtx();
+  [659, 880, 1319].forEach((f, i) => tone(f, 0.14, 'triangle', 0.2, i * 0.07));
+}
+
+export function errorSound() {
+  ensureCtx();
+  tone(180, 0.18, 'square', 0.18);
+}
+
+// ---------- background music: minimal procedural synthwave loop ----------
+let musicOn = true;
+let musicTimer = null;
+let musicStep = 0;
+const BASS = [55, 55, 65.4, 49];          // A1 A1 C2 G1
+const ARP = [220, 261.6, 329.6, 261.6];   // Am arp
+
+function musicTick() {
+  if (muted || !musicOn || !ctx) return;
+  const bar = Math.floor(musicStep / 8) % 4;
+  const t0 = ctx.currentTime;
+  // bass every step
+  const osc = ctx.createOscillator(), gg = ctx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.value = BASS[bar];
+  gg.gain.setValueAtTime(0.05, t0);
+  gg.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+  osc.connect(gg); gg.connect(masterGain);
+  osc.start(t0); osc.stop(t0 + 0.25);
+  // arp on even steps
+  if (musicStep % 2 === 0) {
+    const a = ctx.createOscillator(), ag = ctx.createGain();
+    a.type = 'triangle';
+    a.frequency.value = ARP[(musicStep / 2) % 4] * (bar === 2 ? 1.189 : 1);
+    ag.gain.setValueAtTime(0.035, t0);
+    ag.gain.exponentialRampToValueAtTime(0.001, t0 + 0.3);
+    a.connect(ag); ag.connect(masterGain);
+    a.start(t0); a.stop(t0 + 0.32);
+  }
+  musicStep++;
+}
+
+export function startMusic() {
+  ensureCtx();
+  if (musicTimer) return;
+  musicTimer = setInterval(musicTick, 240);
+}
+
+export function setMusicOn(on) {
+  musicOn = on;
+  if (on) startMusic();
+}
+
+export function getMusicOn() { return musicOn; }
+

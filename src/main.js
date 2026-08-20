@@ -2,6 +2,7 @@
 // Zero blood: enemies are neon droids that burst into glowing particles & springs.
 import { initSDK, loadingStart, loadingStop, gameplayStart, gameplayStop, happytime, requestAd, getMuteSetting, onSettingsChange, loadBest, saveBest } from './sdk.js';
 import * as audio from './audio.js';
+import { meta, loadMeta, saveMeta, checkDailyStreak, addCores, UPGRADES, KATANAS, PERKS, upgradeLevel, upgradeCost, buyUpgrade, buyKatana, buyPerk, runStats } from './meta.js';
 
 const W = 960, H = 640;
 const CX = W / 2, CY = H / 2;
@@ -19,9 +20,9 @@ function resize() {
 window.addEventListener('resize', resize); resize();
 
 // ---------- state ----------
-let state = 'loading'; // loading -> menu -> playing -> gameover
+let state = 'loading'; // loading -> menu -> playing -> gameover (+shop)
 let score = 0, best = 0, wave = 0;
-let hero, enemies, bullets, particles, floats, pickups;
+let hero, enemies, bullets, particles, floats, pickups, cores;
 let combo = 0, comboTimer = 0, multiplier = 1;
 let shake = 0, hurtFlash = 0, slowmo = 0, timeScale = 1;
 let waveBanner = 0, waveBannerText = '';
@@ -32,6 +33,16 @@ let paused = false;
 let tPulse = 0;
 let spawnQueue = [];
 let spawnTimer = 0;
+let stats = null;          // per-run derived stats from meta upgrades + perk
+let runCores = 0;          // cores collected this run (banked on game over)
+let fever = 0;             // combo fever buff timer
+let feverUsedAtCombo = 0;
+let vampireKills = 0;
+let hintT = 0;             // contextual hint timer (first run seconds)
+let lastAdAt = 0;          // gate midgame ads: max 1 per 60s
+let streakInfo = null;
+let coresDoubled = false;
+let newBestWave = false;
 
 const KEYS = {};
 let mouseX = CX, mouseY = CY - 100;
@@ -42,9 +53,10 @@ const joy = { active: false, id: -1, x0: 0, y0: 0, dx: 0, dy: 0 };
 const rightTouch = { active: false, id: -1, x0: 0, y0: 0, t0: 0 };
 
 function newHero() {
+  const s = stats;
   return {
     x: CX, y: CY, vx: 0, vy: 0, aim: -Math.PI / 2,
-    hp: 3, speed: 230,
+    hp: s.hpMax, hpMax: s.hpMax, speed: s.speed,
     slashTimer: 0, slashCd: 0, slashAngle: 0,
     dashTimer: 0, dashCd: 0, iframes: 0,
     trail: [], slashArcs: [],
@@ -52,44 +64,57 @@ function newHero() {
 }
 
 function reset() {
+  stats = runStats();
   hero = newHero();
-  enemies = []; bullets = []; particles = []; floats = []; pickups = [];
+  enemies = []; bullets = []; particles = []; floats = []; pickups = []; cores = [];
   score = 0; wave = 0; combo = 0; comboTimer = 0; multiplier = 1;
   shake = 0; hurtFlash = 0; slowmo = 0; timeScale = 1;
   secondWindUsed = false; secondWindShield = 0; killsTotal = 0;
   spawnQueue = []; spawnTimer = 0;
+  runCores = 0; fever = 0; feverUsedAtCombo = 0; vampireKills = 0;
+  hintT = 0; coresDoubled = false; newBestWave = false;
 }
 
 // ---------- waves ----------
 function startWave(n) {
   wave = n;
-  waveBanner = 2; waveBannerText = (n % 5 === 0) ? 'WAVE ' + n + ' — MINI-BOSS!' : 'WAVE ' + n;
-  if (n % 5 === 0) audio.bossSound(); else audio.waveSound();
+  if (n > meta.bestWave) { meta.bestWave = n; newBestWave = true; saveMeta(); }
+  const isBoss = n % 5 === 0;
+  const isMegaBoss = n % 10 === 0;
+  waveBanner = 2;
+  waveBannerText = isMegaBoss ? 'WAVE ' + n + ' — TWIN CORE!' : isBoss ? 'WAVE ' + n + ' — MINI-BOSS!' : 'WAVE ' + n;
+  if (isBoss) audio.bossSound(); else audio.waveSound();
   const q = [];
-  if (n % 5 === 0) {
+  if (isMegaBoss) {
+    q.push('twin'); q.push('twin');
+    for (let i = 0; i < 2 + Math.floor(n / 10); i++) q.push('melee');
+  } else if (isBoss) {
     q.push('boss');
     for (let i = 0; i < 2 + Math.floor(n / 5); i++) q.push('melee');
   } else {
-    const count = 3 + n * 2;
+    // gentler ramp for the first ~minute (waves 1-3), then normal growth
+    const count = n <= 3 ? 2 + n : 3 + n * 2;
     for (let i = 0; i < count; i++) {
       const r = Math.random();
-      if (n >= 2 && r < 0.25) q.push('shooter');
-      else if (n >= 3 && r < 0.45) q.push('kamikaze');
+      if (n >= 4 && r < 0.12) q.push('shield');
+      else if (n >= 6 && r < 0.24) q.push('splitter');
+      else if (n >= 2 && r < 0.45) q.push('shooter');
+      else if (n >= 3 && r < 0.62) q.push('kamikaze');
       else q.push('melee');
     }
   }
   spawnQueue = q; spawnTimer = 0.3;
   // heart pickup every 3 waves if hurt
-  if (n > 1 && n % 3 === 0 && hero.hp < 3) {
+  if (n > 1 && n % 3 === 0 && hero.hp < hero.hpMax) {
     const a = Math.random() * Math.PI * 2;
     pickups.push({ x: CX + Math.cos(a) * ARENA_R * 0.5, y: CY + Math.sin(a) * ARENA_R * 0.5, t: 0 });
   }
 }
 
-function spawnEnemy(type) {
+function spawnEnemy(type, px, py) {
   const a = Math.random() * Math.PI * 2;
-  const x = CX + Math.cos(a) * (ARENA_R - 14);
-  const y = CY + Math.sin(a) * (ARENA_R - 14);
+  const x = px != null ? px : CX + Math.cos(a) * (ARENA_R - 14);
+  const y = py != null ? py : CY + Math.sin(a) * (ARENA_R - 14);
   const wv = wave;
   if (type === 'melee') {
     enemies.push({ type, x, y, hp: 1, r: 14, speed: 70 + wv * 4, t: 0, spawn: 0.6, hue: 185 });
@@ -97,9 +122,21 @@ function spawnEnemy(type) {
     enemies.push({ type, x, y, hp: 1, r: 13, speed: 55 + wv * 2, t: Math.random() * 2, spawn: 0.6, fireCd: 1.6, hue: 300 });
   } else if (type === 'kamikaze') {
     enemies.push({ type, x, y, hp: 1, r: 11, speed: 150 + wv * 5, t: 0, spawn: 0.6, hue: 20 });
+  } else if (type === 'shield') {
+    // shield droid: front is invulnerable — hit it from behind (faces the hero)
+    enemies.push({ type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: 0, hue: 130 });
+  } else if (type === 'splitter') {
+    // splits into two minis on death
+    enemies.push({ type, x, y, hp: 2, r: 17, speed: 60 + wv * 3, t: 0, spawn: 0.7, hue: 50 });
+  } else if (type === 'mini') {
+    enemies.push({ type: 'melee', mini: true, x, y, hp: 1, r: 8, speed: 130 + wv * 4, t: 0, spawn: 0.25, hue: 50 });
   } else if (type === 'boss') {
     const bhp = 16 + Math.floor(wv / 5) * 8;
     enemies.push({ type, x, y, hp: bhp, maxHp: bhp, r: 34, speed: 45, t: 0, spawn: 1, fireCd: 2.5, chargeCd: 4, charging: 0, cvx: 0, cvy: 0, hue: 265 });
+  } else if (type === 'twin') {
+    // twin core boss (every 10 waves): orbits arena, spiral fire
+    const bhp = 12 + Math.floor(wv / 10) * 8;
+    enemies.push({ type, x, y, hp: bhp, maxHp: bhp, r: 26, speed: 60, t: Math.random() * 6, spawn: 1, fireCd: 2, orbitA: a, orbitDir: Math.random() < 0.5 ? 1 : -1, hue: 335 });
   }
 }
 
@@ -130,18 +167,26 @@ function angDiff(a, b) {
 
 function doSlash() {
   if (hero.slashCd > 0 || state !== 'playing') return;
-  hero.slashCd = 0.28;
+  hero.slashCd = fever > 0 ? 0.2 : 0.28;
   hero.slashTimer = 0.14;
   hero.slashAngle = hero.aim;
   hero.slashArcs.push({ a: hero.aim, t: 0 });
   audio.slashSound(combo);
   let kills = 0;
-  const RANGE = 82, HALF = Math.PI * (60 / 180); // 120° arc
+  const RANGE = stats.range, HALF = Math.PI * (60 / 180); // 120° arc
   for (const e of enemies) {
     if (e.spawn > 0) continue;
     const dx = e.x - hero.x, dy = e.y - hero.y;
     const d = Math.hypot(dx, dy);
     if (d < RANGE + e.r && angDiff(Math.atan2(dy, dx), hero.aim) < HALF) {
+      // shield droid blocks frontal hits — attack from behind
+      if (e.type === 'shield' && angDiff(Math.atan2(hero.y - e.y, hero.x - e.x), e.face) < Math.PI * 0.5) {
+        audio.deflectSound();
+        addFloat(e.x, e.y - 20, 'BLOCKED!', 130);
+        burst(e.x, e.y, 130, 4, 90);
+        shake = Math.min(shake + 2, 12);
+        continue;
+      }
       e.hp -= 1;
       e.hitFlash = 0.15;
       shake = Math.min(shake + 4, 12);
@@ -165,7 +210,7 @@ function doSlash() {
     }
   }
   if (kills >= 3) {
-    slowmo = 0.3;
+    slowmo = stats.slowmoDur;
     audio.slowmoSound();
     addFloat(hero.x, hero.y - 40, 'TRIPLE KILL!', 55);
     shake = 14;
@@ -178,21 +223,56 @@ function killEnemy(e) {
   combo++;
   comboTimer = 3;
   multiplier = 1 + Math.floor(combo / 3);
-  const pts = (e.type === 'boss' ? 500 : e.type === 'kamikaze' ? 30 : e.type === 'shooter' ? 25 : 15) * multiplier;
+  // combo fever: at x10 combo — short attack-speed + move buff
+  if (combo >= 10 && combo % 10 === 0 && combo !== feverUsedAtCombo) {
+    feverUsedAtCombo = combo;
+    fever = 5;
+    audio.feverSound();
+    addFloat(hero.x, hero.y - 55, 'COMBO FEVER!', 55);
+    burst(hero.x, hero.y, 55, 24, 200);
+    shake = 12;
+    happytime();
+  }
+  const isBoss = e.type === 'boss' || e.type === 'twin';
+  const basePts = isBoss ? 500 : e.type === 'kamikaze' ? 30 : e.type === 'shooter' ? 25 : e.type === 'shield' ? 40 : e.type === 'splitter' ? 35 : 15;
+  const pts = Math.round(basePts * multiplier * stats.scoreMul);
   score += pts;
   addFloat(e.x, e.y, '+' + pts, e.hue);
   audio.hitSound(combo);
-  burst(e.x, e.y, e.hue, e.type === 'boss' ? 40 : 14, e.type === 'boss' ? 220 : 160);
-  if (e.type === 'boss') {
+  burst(e.x, e.y, e.hue, isBoss ? 40 : 14, isBoss ? 220 : 160);
+  // drop persistent cores currency
+  const nCores = isBoss ? 5 : e.type === 'shield' || e.type === 'splitter' ? 2 : e.mini ? 0 : Math.random() < 0.55 ? 1 : 0;
+  for (let i = 0; i < nCores; i++) {
+    const a = Math.random() * Math.PI * 2;
+    cores.push({ x: e.x + Math.cos(a) * 8, y: e.y + Math.sin(a) * 8, vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, t: 0 });
+  }
+  // splitter splits into two fast minis
+  if (e.type === 'splitter') {
+    spawnEnemy('mini', e.x - 12, e.y);
+    spawnEnemy('mini', e.x + 12, e.y);
+  }
+  // vampire perk: +1 heart every 20 kills
+  if (stats.vampire) {
+    vampireKills++;
+    if (vampireKills >= 20) {
+      vampireKills = 0;
+      if (hero.hp < hero.hpMax) {
+        hero.hp++;
+        addFloat(hero.x, hero.y - 30, 'VAMPIRE +1 HP', 0);
+        audio.pickupSound();
+      }
+    }
+  }
+  if (isBoss) {
     shake = 18;
     happytime();
-    addFloat(e.x, e.y - 30, 'BOSS DOWN!', 55);
+    addFloat(e.x, e.y - 30, e.type === 'twin' ? 'CORE DOWN!' : 'BOSS DOWN!', 55);
   }
 }
 
 function doDash() {
   if (hero.dashCd > 0 || state !== 'playing') return;
-  hero.dashCd = 2;
+  hero.dashCd = stats.dashCd;
   hero.dashTimer = 0.16;
   hero.iframes = Math.max(hero.iframes, 0.3);
   let dx = 0, dy = 0;
@@ -226,24 +306,49 @@ function gameOver() {
   gameplayStop();
   audio.gameOverSound();
   if (score > best) { best = score; saveBest(best); }
+  // bank cores collected this run
+  if (runCores > 0) addCores(runCores);
+  meta.plays++;
+  saveMeta();
+  coresDoubled = false;
 }
 
 function startGame() {
   reset();
   state = 'playing';
   gameplayStart();
+  audio.startMusic();
   startWave(1);
 }
 
 async function playAgain() {
   if (adBusy) return;
+  // instant restart if an ad ran recently — never make the player wait twice a minute
+  if (performance.now() - lastAdAt < 60000) { startGame(); return; }
   adBusy = true;
   await requestAd('midgame', {
     onStart: () => { audio.setMuted(true); },
     onFinish: () => { audio.setMuted(getMuteSetting()); },
   });
+  lastAdAt = performance.now();
   adBusy = false;
   startGame();
+}
+
+async function doubleCores() {
+  if (adBusy || coresDoubled || runCores <= 0) return;
+  adBusy = true;
+  const ok = await requestAd('rewarded', {
+    onStart: () => { audio.setMuted(true); },
+    onFinish: () => { audio.setMuted(getMuteSetting()); },
+  });
+  adBusy = false;
+  if (ok) {
+    coresDoubled = true;
+    addCores(runCores); // second helping (first already banked in gameOver)
+    audio.buySound();
+    happytime();
+  }
 }
 
 async function secondWind() {
@@ -256,7 +361,7 @@ async function secondWind() {
   adBusy = false;
   if (ok) {
     secondWindUsed = true;
-    hero.hp = 3;
+    hero.hp = hero.hpMax;
     hero.iframes = 3;
     secondWindShield = 3;
     state = 'playing';
@@ -275,7 +380,10 @@ function update(dt) {
     return;
   }
   if (slowmo > 0) { slowmo -= dt; timeScale = 0.3; } else timeScale = 1;
+  if (fever > 0) fever -= dt;
+  hintT += dt;
   const sdt = dt * timeScale;
+  const heroSpeed = hero.speed * (fever > 0 ? 1.25 : 1);
 
   // hero movement
   let mx = 0, my = 0;
@@ -292,8 +400,8 @@ function update(dt) {
     hero.x += hero.dvx * sdt; hero.y += hero.dvy * sdt;
     hero.trail.push({ x: hero.x, y: hero.y, t: 0 });
   } else {
-    hero.x += mx * hero.speed * sdt;
-    hero.y += my * hero.speed * sdt;
+    hero.x += mx * heroSpeed * sdt;
+    hero.y += my * heroSpeed * sdt;
     if (Math.abs(mx) + Math.abs(my) > 0.1 && Math.random() < 0.3) hero.trail.push({ x: hero.x, y: hero.y, t: 0.25 });
   }
   // clamp to arena
@@ -329,6 +437,10 @@ function update(dt) {
     const dx = hero.x - e.x, dy = hero.y - e.y;
     const d = Math.hypot(dx, dy) || 1;
     if (e.type === 'melee') {
+      e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
+      if (d < e.r + 14) damageHero();
+    } else if (e.type === 'shield') {
+      e.face = Math.atan2(dy, dx); // always faces the hero
       e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
       if (d < e.r + 14) damageHero();
     } else if (e.type === 'shooter') {
@@ -373,6 +485,29 @@ function update(dt) {
       const bd = Math.hypot(e.x - CX, e.y - CY);
       if (bd > ARENA_R - e.r) { e.x = CX + (e.x - CX) / bd * (ARENA_R - e.r); e.y = CY + (e.y - CY) / bd * (ARENA_R - e.r); }
       if (d < e.r + 14) damageHero();
+    } else if (e.type === 'splitter') {
+      // lumbering zigzag approach
+      const wob = Math.sin(e.t * 4) * 0.6;
+      const a2 = Math.atan2(dy, dx) + wob;
+      e.x += Math.cos(a2) * e.speed * sdt; e.y += Math.sin(a2) * e.speed * sdt;
+      if (d < e.r + 14) damageHero();
+    } else if (e.type === 'twin') {
+      // orbits the arena edge, spiral fire toward hero
+      e.orbitA += e.orbitDir * (e.speed / 180) * sdt;
+      const or = ARENA_R * 0.62;
+      const tx = CX + Math.cos(e.orbitA) * or, ty = CY + Math.sin(e.orbitA) * or;
+      e.x += (tx - e.x) * Math.min(1, 2.5 * sdt);
+      e.y += (ty - e.y) * Math.min(1, 2.5 * sdt);
+      e.fireCd -= sdt;
+      if (e.fireCd <= 0) {
+        e.fireCd = 1.9;
+        const base = Math.atan2(hero.y - e.y, hero.x - e.x);
+        for (let i = -1; i <= 1; i++) {
+          const a3 = base + i * 0.35;
+          bullets.push({ x: e.x, y: e.y, vx: Math.cos(a3) * 140, vy: Math.sin(a3) * 140, r: 6, hue: 335, friendly: false });
+        }
+      }
+      if (d < e.r + 14) damageHero();
     }
   }
   enemies = enemies.filter(e => !e.dead);
@@ -399,18 +534,42 @@ function update(dt) {
   bullets = bullets.filter(b => !b.dead);
   enemies = enemies.filter(e => !e.dead);
 
-  // pickups
+  // pickups (heart) — with core magnet pull
   for (const p of pickups) {
     p.t += sdt;
-    if (Math.hypot(p.x - hero.x, p.y - hero.y) < 24 && hero.hp < 3) {
+    const pd = Math.hypot(p.x - hero.x, p.y - hero.y);
+    if (pd < stats.magnet && pd > 1) {
+      p.x += (hero.x - p.x) / pd * 160 * sdt;
+      p.y += (hero.y - p.y) / pd * 160 * sdt;
+    }
+    if (pd < 24 && hero.hp < hero.hpMax) {
       p.dead = true;
-      hero.hp = Math.min(3, hero.hp + 1);
+      hero.hp = Math.min(hero.hpMax, hero.hp + 1);
       audio.pickupSound();
       addFloat(p.x, p.y, '+1 HP', 0);
       burst(p.x, p.y, 350, 12, 130);
     }
   }
   pickups = pickups.filter(p => !p.dead);
+
+  // cores (persistent currency drops)
+  for (const c of cores) {
+    c.t += sdt;
+    c.x += c.vx * sdt; c.y += c.vy * sdt;
+    c.vx *= 0.92; c.vy *= 0.92;
+    const cd2 = Math.hypot(c.x - hero.x, c.y - hero.y);
+    if (cd2 < stats.magnet && cd2 > 1) {
+      c.x += (hero.x - c.x) / cd2 * 260 * sdt;
+      c.y += (hero.y - c.y) / cd2 * 260 * sdt;
+    }
+    if (cd2 < 20) {
+      c.dead = true;
+      runCores++;
+      audio.coreSound();
+    }
+    if (c.t > 12) c.dead = true; // despawn
+  }
+  cores = cores.filter(c => !c.dead);
 
   // wave clear
   if (enemies.length === 0 && spawnQueue.length === 0 && state === 'playing') {
@@ -485,6 +644,18 @@ function render() {
       g.restore();
     }
 
+    // cores (currency)
+    for (const c of cores) {
+      const s = 1 + Math.sin(c.t * 6) * 0.2;
+      g.save(); g.translate(c.x, c.y); g.rotate(c.t * 2); g.scale(s, s);
+      g.shadowColor = '#4dd2ff'; g.shadowBlur = 12;
+      g.strokeStyle = '#9ee8ff'; g.fillStyle = 'rgba(30,120,200,0.7)'; g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(0, -6); g.lineTo(5, 0); g.lineTo(0, 6); g.lineTo(-5, 0);
+      g.closePath(); g.fill(); g.stroke();
+      g.restore();
+    }
+
     // hero trail
     for (const tr of hero.trail) {
       const a = 1 - tr.t / 0.4;
@@ -553,12 +724,39 @@ function render() {
     g.fillStyle = '#9ef0ff'; g.font = '700 22px "Segoe UI", sans-serif';
     g.fillText('WAVE ' + wave, W - 18, 14);
     // hearts
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < hero.hpMax; i++) {
       g.save(); g.translate(W - 30 - i * 30, 58);
       g.shadowColor = '#ff4d6d'; g.shadowBlur = 8;
       g.fillStyle = i < hero.hp ? '#ff4d6d' : 'rgba(120,120,140,0.3)';
       heartPath(0, 0, 9); g.fill();
       g.restore();
+    }
+    // cores counter
+    g.save(); g.translate(24, 82);
+    g.shadowColor = '#4dd2ff'; g.shadowBlur = 8;
+    g.strokeStyle = '#9ee8ff'; g.fillStyle = 'rgba(30,120,200,0.8)'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(0, -6); g.lineTo(5, 0); g.lineTo(0, 6); g.lineTo(-5, 0); g.closePath(); g.fill(); g.stroke();
+    g.restore();
+    g.textAlign = 'left';
+    g.fillStyle = '#9ee8ff'; g.font = '700 16px "Segoe UI", sans-serif';
+    g.fillText('' + runCores, 38, 74);
+    // fever banner
+    if (fever > 0) {
+      g.textAlign = 'center';
+      g.save();
+      g.shadowColor = '#ffe14d'; g.shadowBlur = 18;
+      g.fillStyle = 'hsla(55,100%,70%,' + (0.7 + Math.sin(tPulse * 10) * 0.3) + ')';
+      g.font = '900 20px "Segoe UI", sans-serif';
+      g.fillText('FEVER ' + fever.toFixed(1) + 's', CX, 92);
+      g.restore();
+    }
+    // contextual hints in the first seconds of the very first run
+    if (meta.plays === 0 && state === 'playing') {
+      g.textAlign = 'center';
+      g.fillStyle = 'rgba(190,220,255,' + Math.max(0, Math.min(1, 8 - hintT)) * 0.85 + ')';
+      g.font = '600 17px "Segoe UI", sans-serif';
+      if (hintT < 4) g.fillText(isTouch ? 'Left thumb: move · Tap right side: slash' : 'WASD: move · Click: slash', CX, H - 70);
+      else if (hintT < 8) g.fillText(isTouch ? 'Swipe right side: dash through danger' : 'SPACE: dash through danger', CX, H - 70);
     }
     // combo
     if (combo >= 2) {
@@ -579,7 +777,7 @@ function render() {
     g.fillText('DASH', 18, H - 34);
     g.strokeStyle = 'rgba(120,200,255,0.5)'; g.strokeRect(60, H - 32, 90, 10);
     g.fillStyle = hero.dashCd <= 0 ? '#4dffd2' : 'rgba(120,200,255,0.5)';
-    g.fillRect(60, H - 32, 90 * (1 - Math.max(0, hero.dashCd) / 2), 10);
+    g.fillRect(60, H - 32, 90 * (1 - Math.max(0, hero.dashCd) / stats.dashCd), 10);
   }
 
   // wave banner
@@ -606,6 +804,7 @@ function render() {
   }
 
   if (state === 'menu') renderMenu();
+  if (state === 'shop') renderShop();
   if (state === 'gameover') renderGameOver();
   if (state === 'loading') {
     g.fillStyle = '#9ef0ff'; g.font = '700 28px "Segoe UI", sans-serif';
@@ -649,14 +848,15 @@ function drawHero() {
   // head glow
   g.fillStyle = '#b3fff0';
   g.beginPath(); g.arc(4, 0, 3.5, 0, Math.PI * 2); g.fill();
-  // katana
+  // katana (cosmetic hue from selected skin)
+  const kHue = KATANAS[meta.katana].hue;
   const sl = h.slashTimer > 0 ? 1 : 0;
   g.save();
   g.rotate(sl ? (-1 + (1 - h.slashTimer / 0.14) * 2) * 1.05 : 0.45);
-  g.shadowColor = '#ff4dff'; g.shadowBlur = 14;
-  g.strokeStyle = '#ffb3ff'; g.lineWidth = 3;
+  g.shadowColor = 'hsl(' + kHue + ',100%,65%)'; g.shadowBlur = 14;
+  g.strokeStyle = 'hsl(' + kHue + ',100%,85%)'; g.lineWidth = 3;
   g.beginPath(); g.moveTo(8, 0); g.lineTo(38, 0); g.stroke();
-  g.strokeStyle = '#ff4dff'; g.lineWidth = 1.2;
+  g.strokeStyle = 'hsl(' + kHue + ',100%,65%)'; g.lineWidth = 1.2;
   g.beginPath(); g.moveTo(8, 0); g.lineTo(38, 0); g.stroke();
   g.restore();
   g.restore();
@@ -665,8 +865,8 @@ function drawHero() {
     const p = a.t / 0.22;
     g.save();
     g.translate(h.x, h.y);
-    g.shadowColor = '#ff4dff'; g.shadowBlur = 20;
-    g.strokeStyle = 'hsla(300,100%,75%,' + (1 - p) + ')';
+    g.shadowColor = 'hsl(' + kHue + ',100%,65%)'; g.shadowBlur = 20;
+    g.strokeStyle = 'hsla(' + kHue + ',100%,75%,' + (1 - p) + ')';
     g.lineWidth = 8 * (1 - p) + 2;
     g.beginPath();
     g.arc(0, 0, 55 + p * 30, a.a - Math.PI / 3, a.a + Math.PI / 3);
@@ -712,6 +912,35 @@ function drawEnemy(e) {
     // warning pulse
     const d = Math.hypot(e.x - hero.x, e.y - hero.y);
     if (d < 130) { g.globalAlpha = 0.5 + Math.sin(e.t * 20) * 0.5; g.strokeStyle = '#ff3333'; g.stroke(); }
+  } else if (e.type === 'shield') {
+    // hexagon body + glowing shield arc facing the hero
+    g.rotate(e.face || 0);
+    g.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const px = Math.cos(a) * e.r * 0.85, py = Math.sin(a) * e.r * 0.85;
+      if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    }
+    g.closePath(); g.fill(); g.stroke();
+    // shield arc (front)
+    g.strokeStyle = '#b0ffce'; g.lineWidth = 4;
+    g.shadowBlur = 20;
+    g.beginPath(); g.arc(0, 0, e.r + 4, -Math.PI * 0.45, Math.PI * 0.45); g.stroke();
+    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
+    g.beginPath(); g.arc(0, 0, 4, 0, Math.PI * 2); g.fill();
+  } else if (e.type === 'splitter') {
+    g.rotate(Math.sin(e.t * 3) * 0.4);
+    g.beginPath(); g.arc(-6, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.arc(6, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
+    g.beginPath(); g.arc(-6, 0, 3, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(6, 0, 3, 0, Math.PI * 2); g.fill();
+  } else if (e.type === 'twin') {
+    g.rotate(e.t * 1.2);
+    g.beginPath(); g.arc(0, 0, e.r * 0.62, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.beginPath(); g.ellipse(0, 0, e.r, e.r * 0.38, 0, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = 'hsl(' + e.hue + ',100%,70%)';
+    g.beginPath(); g.arc(0, 0, 6, 0, Math.PI * 2); g.fill();
   } else if (e.type === 'boss') {
     g.rotate(e.t * 0.6);
     g.beginPath();
@@ -727,7 +956,7 @@ function drawEnemy(e) {
   }
   g.restore();
   // boss hp bar
-  if (e.type === 'boss' && e.spawn <= 0) {
+  if ((e.type === 'boss' || e.type === 'twin') && e.spawn <= 0) {
     g.fillStyle = 'rgba(0,0,0,0.5)';
     g.fillRect(e.x - 40, e.y - e.r - 18, 80, 8);
     g.fillStyle = '#c04dff';
@@ -764,16 +993,144 @@ function renderMenu() {
   g.save();
   g.shadowColor = '#4dffd2'; g.shadowBlur = 30;
   g.fillStyle = '#ffffff'; g.font = '900 72px "Segoe UI", sans-serif';
-  g.fillText('NEON', CX, CY - 150);
+  g.fillText('NEON', CX, CY - 168);
   g.shadowColor = '#ff4dff';
-  g.fillText('SLASHER', CX, CY - 80);
+  g.fillText('SLASHER', CX, CY - 98);
   g.restore();
-  g.fillStyle = 'rgba(190,220,255,0.85)'; g.font = '600 20px "Segoe UI", sans-serif';
-  g.fillText('WASD move · Mouse aim · Click slash · Space dash', CX, CY - 18);
-  g.fillText('Deflect bullets with your blade. Survive the waves.', CX, CY + 12);
-  uiButtons = { play: btn(CX, CY + 90, 240, 64, 'PLAY', 160) };
-  g.fillStyle = 'rgba(160,200,255,0.6)'; g.font = '600 16px "Segoe UI", sans-serif';
-  g.fillText('BEST ' + best, CX, CY + 150);
+  g.fillStyle = 'rgba(190,220,255,0.85)'; g.font = '600 18px "Segoe UI", sans-serif';
+  g.fillText('WASD move · Mouse aim · Click slash · Space dash', CX, CY - 44);
+  g.fillText('Deflect bullets with your blade. Survive the waves.', CX, CY - 18);
+  uiButtons = {
+    play: btn(CX, CY + 56, 240, 62, 'PLAY', 160),
+    shop: btn(CX, CY + 132, 220, 48, 'UPGRADES', 200),
+    music: btn(W - 70, H - 40, 110, 36, audio.getMusicOn() ? 'MUSIC: ON' : 'MUSIC: OFF', 265),
+  };
+  // cores + streak + records
+  g.textAlign = 'center';
+  g.fillStyle = '#9ee8ff'; g.font = '700 18px "Segoe UI", sans-serif';
+  g.fillText('◆ ' + meta.cores + ' CORES', CX, CY + 178);
+  g.fillStyle = 'rgba(160,200,255,0.6)'; g.font = '600 15px "Segoe UI", sans-serif';
+  g.fillText('BEST ' + best + '  ·  BEST WAVE ' + meta.bestWave, CX, CY + 206);
+  if (streakInfo && streakInfo.count > 1) {
+    g.fillStyle = '#ffe14d'; g.font = '700 15px "Segoe UI", sans-serif';
+    g.fillText('🔥 DAY ' + streakInfo.count + ' STREAK' + (streakInfo.isNew ? '  +' + streakInfo.bonus + ' CORES!' : ''), CX, CY + 232);
+  } else if (streakInfo && streakInfo.isNew && streakInfo.bonus > 0) {
+    g.fillStyle = '#ffe14d'; g.font = '700 15px "Segoe UI", sans-serif';
+    g.fillText('DAILY BONUS +' + streakInfo.bonus + ' CORES', CX, CY + 232);
+  }
+  // perk indicator
+  const perk = PERKS.find(p => p.id === meta.perk);
+  if (perk && perk.id !== 'none') {
+    g.fillStyle = 'rgba(255,180,120,0.8)'; g.font = '600 14px "Segoe UI", sans-serif';
+    g.fillText('PERK: ' + perk.name, CX, CY + 254);
+  }
+}
+
+// ---------- shop (upgrades / katanas / perks) ----------
+let shopTab = 0; // 0 upgrades, 1 katanas, 2 perks
+function renderShop() {
+  g.fillStyle = 'rgba(4,6,18,0.88)';
+  g.fillRect(0, 0, W, H);
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.save();
+  g.shadowColor = '#4dd2ff'; g.shadowBlur = 22;
+  g.fillStyle = '#ffffff'; g.font = '900 40px "Segoe UI", sans-serif';
+  g.fillText('UPGRADES', CX, 52);
+  g.restore();
+  g.fillStyle = '#9ee8ff'; g.font = '700 20px "Segoe UI", sans-serif';
+  g.fillText('◆ ' + meta.cores + ' CORES', CX, 92);
+  uiButtons = { back: btn(80, 40, 110, 40, '← BACK', 300) };
+  // tabs
+  const tabs = ['UPGRADES', 'KATANAS', 'PERKS'];
+  for (let i = 0; i < 3; i++) {
+    uiButtons['tab' + i] = btn(CX - 180 + i * 180, 132, 160, 36, tabs[i], shopTab === i ? 160 : 220);
+  }
+  if (shopTab === 0) {
+    UPGRADES.forEach((u, i) => {
+      const y = 180 + i * 62;
+      const lvl = upgradeLevel(u.id);
+      const cost = upgradeCost(u.id);
+      g.textAlign = 'left';
+      g.fillStyle = '#e8f4ff'; g.font = '700 18px "Segoe UI", sans-serif';
+      g.fillText(u.name, 150, y);
+      g.fillStyle = 'rgba(170,200,255,0.7)'; g.font = '600 14px "Segoe UI", sans-serif';
+      g.fillText(u.desc, 150, y + 22);
+      // pips
+      for (let p = 0; p < u.max; p++) {
+        g.fillStyle = p < lvl ? '#4dffd2' : 'rgba(120,140,180,0.3)';
+        g.fillRect(400 + p * 22, y - 4, 16, 10);
+      }
+      if (cost != null) {
+        uiButtons['up_' + u.id] = btn(680, y + 8, 170, 44, '◆ ' + cost, meta.cores >= cost ? 160 : 0);
+      } else {
+        g.textAlign = 'center'; g.fillStyle = '#4dffd2'; g.font = '700 16px "Segoe UI", sans-serif';
+        g.fillText('MAXED', 680, y + 8);
+      }
+    });
+  } else if (shopTab === 1) {
+    KATANAS.forEach((k, i) => {
+      const y = 190 + i * 78;
+      g.textAlign = 'left';
+      g.save();
+      g.shadowColor = 'hsl(' + k.hue + ',100%,65%)'; g.shadowBlur = 12;
+      g.strokeStyle = 'hsl(' + k.hue + ',100%,75%)'; g.lineWidth = 4;
+      g.beginPath(); g.moveTo(150, y); g.lineTo(230, y); g.stroke();
+      g.restore();
+      g.fillStyle = '#e8f4ff'; g.font = '700 18px "Segoe UI", sans-serif';
+      g.fillText(k.name, 260, y);
+      if (meta.katanasOwned[i]) {
+        uiButtons['kat_' + i] = btn(680, y, 190, 44, meta.katana === i ? '★ EQUIPPED' : 'EQUIP', meta.katana === i ? 55 : 160);
+      } else {
+        uiButtons['kat_' + i] = btn(680, y, 190, 44, '◆ ' + k.cost, meta.cores >= k.cost ? 160 : 0);
+      }
+    });
+  } else {
+    PERKS.forEach((p, i) => {
+      const y = 190 + i * 78;
+      g.textAlign = 'left';
+      g.fillStyle = '#e8f4ff'; g.font = '700 18px "Segoe UI", sans-serif';
+      g.fillText(p.name, 150, y - 8);
+      g.fillStyle = 'rgba(170,200,255,0.7)'; g.font = '600 14px "Segoe UI", sans-serif';
+      g.fillText(p.desc, 150, y + 14);
+      if (meta.perksOwned[p.id]) {
+        uiButtons['perk_' + p.id] = btn(680, y, 190, 44, meta.perk === p.id ? '★ ACTIVE' : 'SELECT', meta.perk === p.id ? 55 : 160);
+      } else {
+        uiButtons['perk_' + p.id] = btn(680, y, 190, 44, '◆ ' + p.cost, meta.cores >= p.cost ? 160 : 0);
+      }
+    });
+  }
+}
+
+function handleShopPress(p) {
+  if (inBtn(p, uiButtons.back)) { state = 'menu'; audio.buySound(); return; }
+  for (let i = 0; i < 3; i++) {
+    if (inBtn(p, uiButtons['tab' + i])) { shopTab = i; return; }
+  }
+  if (shopTab === 0) {
+    for (const u of UPGRADES) {
+      if (inBtn(p, uiButtons['up_' + u.id])) {
+        if (buyUpgrade(u.id)) { audio.buySound(); happytime(); } else audio.errorSound();
+        return;
+      }
+    }
+  } else if (shopTab === 1) {
+    KATANAS.forEach((k, i) => {
+      if (inBtn(p, uiButtons['kat_' + i])) {
+        if (meta.katanasOwned[i]) { meta.katana = i; saveMeta(); audio.buySound(); }
+        else if (buyKatana(i)) { meta.katana = i; saveMeta(); audio.buySound(); happytime(); }
+        else audio.errorSound();
+      }
+    });
+  } else {
+    for (const pk of PERKS) {
+      if (inBtn(p, uiButtons['perk_' + pk.id])) {
+        if (meta.perksOwned[pk.id]) { meta.perk = pk.id; saveMeta(); audio.buySound(); }
+        else if (buyPerk(pk.id)) { meta.perk = pk.id; saveMeta(); audio.buySound(); happytime(); }
+        else audio.errorSound();
+        return;
+      }
+    }
+  }
 }
 
 function renderGameOver() {
@@ -783,22 +1140,29 @@ function renderGameOver() {
   g.save();
   g.shadowColor = '#ff4d6d'; g.shadowBlur = 26;
   g.fillStyle = '#ffffff'; g.font = '900 58px "Segoe UI", sans-serif';
-  g.fillText('SYSTEM DOWN', CX, CY - 150);
+  g.fillText('SYSTEM DOWN', CX, CY - 168);
   g.restore();
   g.fillStyle = '#e8f4ff'; g.font = '700 30px "Segoe UI", sans-serif';
-  g.fillText('SCORE ' + score, CX, CY - 84);
-  g.fillStyle = 'rgba(190,220,255,0.8)'; g.font = '600 20px "Segoe UI", sans-serif';
-  g.fillText('BEST ' + best + '   ·   WAVE ' + wave + '   ·   ' + killsTotal + ' BOTS SLICED', CX, CY - 46);
+  g.fillText('SCORE ' + score, CX, CY - 104);
+  g.fillStyle = 'rgba(190,220,255,0.8)'; g.font = '600 18px "Segoe UI", sans-serif';
+  g.fillText('BEST ' + best + '   ·   WAVE ' + wave + (newBestWave ? ' ★NEW RECORD' : '') + '   ·   ' + killsTotal + ' BOTS SLICED', CX, CY - 68);
+  g.fillStyle = '#9ee8ff'; g.font = '700 20px "Segoe UI", sans-serif';
+  g.fillText('◆ +' + (coresDoubled ? runCores * 2 : runCores) + ' CORES BANKED' + (coresDoubled ? ' (x2!)' : ''), CX, CY - 34);
   uiButtons = {};
+  let y = CY + 16;
   if (!secondWindUsed) {
-    uiButtons.secondWind = btn(CX, CY + 26, 340, 60, '▶ SECOND WIND (AD)', 130);
-    uiButtons.playAgain = btn(CX, CY + 106, 260, 56, 'PLAY AGAIN', 300);
-  } else {
-    uiButtons.playAgain = btn(CX, CY + 50, 280, 64, 'PLAY AGAIN', 300);
+    uiButtons.secondWind = btn(CX, y, 340, 56, '▶ SECOND WIND (AD)', 130);
+    y += 68;
   }
+  if (runCores > 0 && !coresDoubled) {
+    uiButtons.doubleCores = btn(CX, y, 340, 52, '▶ DOUBLE CORES (AD)', 200);
+    y += 64;
+  }
+  uiButtons.playAgain = btn(CX, y, 260, 56, 'PLAY AGAIN', 300);
+  uiButtons.toShop = btn(CX, y + 66, 200, 44, 'UPGRADES', 200);
   if (adBusy) {
     g.fillStyle = '#ffe14d'; g.font = '700 18px "Segoe UI", sans-serif';
-    g.fillText('Loading ad...', CX, CY + 170);
+    g.fillText('Loading ad...', CX, H - 30);
   }
 }
 
@@ -814,13 +1178,22 @@ function inBtn(p, b) {
 
 function handlePress(p) {
   audio.unlockAudio();
+  audio.startMusic();
   if (state === 'menu') {
     if (inBtn(p, uiButtons.play)) startGame();
+    else if (inBtn(p, uiButtons.shop)) { state = 'shop'; shopTab = 0; }
+    else if (inBtn(p, uiButtons.music)) audio.setMusicOn(!audio.getMusicOn());
+    return true;
+  }
+  if (state === 'shop') {
+    handleShopPress(p);
     return true;
   }
   if (state === 'gameover') {
     if (inBtn(p, uiButtons.secondWind)) { secondWind(); return true; }
+    if (inBtn(p, uiButtons.doubleCores)) { doubleCores(); return true; }
     if (inBtn(p, uiButtons.playAgain)) { playAgain(); return true; }
+    if (inBtn(p, uiButtons.toShop)) { state = 'shop'; shopTab = 0; return true; }
     return true;
   }
   return false;
@@ -907,12 +1280,24 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
   window.__astro = {
     forceGameOver: () => { if (state === 'playing') { hero.hp = 0; gameOver(); } },
     addScore: (n) => { score += n; },
+    addCores: (n) => { addCores(n); },
+    addRunCores: (n) => { runCores += n; },
+    setCombo: (n) => { combo = n; comboTimer = 3; multiplier = 1 + Math.floor(n / 3); },
+    spawn: (type) => spawnEnemy(type),
+    setWave: (n) => { enemies = []; bullets = []; spawnQueue = []; startWave(n); },
+    openShop: () => { if (state === 'menu' || state === 'gameover') { state = 'shop'; shopTab = 0; } },
+    getMeta: () => JSON.parse(JSON.stringify(meta)),
+    getButtons: () => { const o = {}; for (const k in uiButtons) o[k] = { x: uiButtons[k].x, y: uiButtons[k].y }; return o; },
     getState: () => ({
-      state, hp: hero ? hero.hp : 0, wave, score,
+      state, hp: hero ? hero.hp : 0, hpMax: hero ? hero.hpMax : 0, wave, score,
       heroX: hero ? hero.x : 0, heroY: hero ? hero.y : 0,
       dashCd: hero ? hero.dashCd : 0,
-      combo, secondWindUsed,
+      combo, secondWindUsed, fever, runCores,
+      cores: meta.cores, bestWave: meta.bestWave, streak: meta.streakCount,
+      katana: meta.katana, perk: meta.perk, plays: meta.plays,
+      shopTab,
       enemies: enemies ? enemies.map(e => ({ dx: e.x - hero.x, dy: e.y - hero.y, type: e.type, hp: e.hp })) : [],
+      coreDrops: cores ? cores.length : 0,
       bullets: bullets ? bullets.length : 0,
     }),
     startGame: () => { if (state === 'menu') startGame(); },
@@ -935,6 +1320,8 @@ async function boot() {
   await initSDK();
   loadingStart(); // must be AFTER initSDK (sdk null before)
   best = loadBest();
+  loadMeta();
+  streakInfo = checkDailyStreak();
   audio.setMuted(getMuteSetting());
   onSettingsChange((s) => { if (s && typeof s.muteAudio === 'boolean') audio.setMuted(s.muteAudio); });
   reset();
