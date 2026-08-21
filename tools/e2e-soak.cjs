@@ -1,0 +1,32 @@
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+  await page.waitForFunction(() => window.__astro?.getState().state === 'menu');
+  const first = await page.evaluate(() => window.__astro.runSoak(120));
+  await page.evaluate(() => window.__astro.setPausedForTest('soak', true));
+  const pauseAt = await page.evaluate(() => window.__astro.getDebugCounts());
+  await page.waitForTimeout(180);
+  const paused = await page.evaluate(() => window.__astro.getDebugCounts());
+  await page.evaluate(() => window.__astro.setPausedForTest('soak', false));
+  await page.waitForTimeout(5000);
+  const final = await page.evaluate(() => window.__astro.getDebugCounts());
+  const caps = { enemies: 48, bullets: 96, particles: 420, debris: 80, flashes: 48, beams: 48, floats: 32, cores: 48, trail: 36, ghosts: 24 };
+  const bounded = Object.entries(caps).every(([key, cap]) => final[key] <= cap);
+  const lifecycleStopsSimulation = paused.fixedSteps === pauseAt.fixedSteps;
+  const resumedOnce = final.loopStarts === 1 && final.fixedSteps > paused.fixedSteps;
+  const fpsHealthy = final.renderedFrames - first.renderedFrames >= 100;
+  console.log('counts:', JSON.stringify(final));
+  console.log(`${bounded ? 'PASS' : 'FAIL'} — all effect and actor arrays are bounded`);
+  console.log(`${lifecycleStopsSimulation ? 'PASS' : 'FAIL'} — lifecycle pause stops fixed updates`);
+  console.log(`${resumedOnce ? 'PASS' : 'FAIL'} — lifecycle resumes one existing loop`);
+  console.log(`${fpsHealthy ? 'PASS' : 'FAIL'} — five-second real-time frame health`);
+  console.log(`${errors.length === 0 ? 'PASS' : 'FAIL'} — zero browser errors`);
+  await browser.close();
+  process.exit(bounded && lifecycleStopsSimulation && resumedOnce && fpsHealthy && errors.length === 0 ? 0 : 1);
+})().catch(e => { console.error(e); process.exit(1); });

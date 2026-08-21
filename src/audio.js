@@ -20,6 +20,16 @@ export function setMuted(m) {
 
 export function unlockAudio() { ensureCtx(); }
 
+// Lifecycle hooks deliberately suspend the context rather than rebuilding it.
+// This keeps one audio graph alive across visibility, focus, ads and retries.
+export function pauseAudio() {
+  if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
+}
+
+export function resumeAudio() {
+  if (ctx && !muted && ctx.state === 'suspended') ctx.resume().catch(() => {});
+}
+
 function tone(freq, dur, type, vol, delay = 0) {
   if (muted || !ctx) return;
   const t0 = ctx.currentTime + delay;
@@ -185,4 +195,3 @@ export function setMusicOn(on) {
 }
 
 export function getMusicOn() { return musicOn; }
-
