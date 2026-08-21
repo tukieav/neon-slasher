@@ -1307,10 +1307,13 @@ function render() {
   // HUD (slim: big WAVE/SCORE live on the holo-billboards outside the arena)
   if (state === 'playing' || state === 'gameover') {
     g.textAlign = 'center'; g.textBaseline = 'top';
+    g.save();
+    g.shadowColor = 'rgba(0,0,10,0.9)'; g.shadowBlur = 6;
     g.fillStyle = '#e8f4ff'; g.font = '700 22px "Segoe UI", sans-serif';
     g.fillText('SCORE ' + score, CX, 8);
-    g.fillStyle = 'rgba(180,210,255,0.6)'; g.font = '600 14px "Segoe UI", sans-serif';
+    g.fillStyle = 'rgba(200,225,255,0.85)'; g.font = '600 14px "Segoe UI", sans-serif';
     g.fillText('WAVE ' + wave + ' · BEST ' + best, CX, 36);
+    g.restore();
     g.textAlign = 'left';
     // hearts (bottom-right)
     for (let i = 0; i < hero.hpMax; i++) {
