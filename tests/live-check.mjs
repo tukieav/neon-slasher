@@ -19,9 +19,9 @@ const bright = await page.evaluate(() => {
 });
 console.log('bright samples:', bright);
 // play a bit
-const W = 960, H = 640;
+const cam = await page.evaluate(() => window.__astro.getCam());
 const bbox = await page.locator('#game').boundingBox();
-await page.mouse.click(bbox.x + (W/2) * (bbox.width/W), bbox.y + (H/2 + 90) * (bbox.height/H));
+await page.mouse.click(bbox.x + cam.ox + (960/2) * cam.scale, bbox.y + cam.oy + (640/2 + 56) * cam.scale);
 await page.waitForTimeout(800);
 await page.keyboard.down('d'); await page.waitForTimeout(400); await page.keyboard.up('d');
 await page.keyboard.press('Space');

@@ -1,7 +1,7 @@
 // Neon Slasher — full functional test (Playwright + system Chrome)
 import { chromium } from 'playwright';
 
-const URL = 'http://localhost:8517/?debug=1';
+const URL = 'http://localhost:8533/?debug=1';
 const W = 960, H = 640;
 let failures = 0;
 function check(name, cond) {
@@ -21,8 +21,9 @@ await page.waitForTimeout(1500);
 const getState = () => page.evaluate(() => window.__astro.getState());
 const getMeta = () => page.evaluate(() => window.__astro.getMeta());
 const bbox = await page.locator('#game').boundingBox();
-const gx = (x) => bbox.x + x * (bbox.width / W);
-const gy = (y) => bbox.y + y * (bbox.height / H);
+const camInfo = await page.evaluate(() => window.__astro.getCam());
+const gx = (x) => bbox.x + camInfo.ox + x * camInfo.scale;
+const gy = (y) => bbox.y + camInfo.oy + y * camInfo.scale;
 async function clickBtn(name) {
   const btns = await page.evaluate(() => window.__astro.getButtons());
   if (!btns[name]) return false;

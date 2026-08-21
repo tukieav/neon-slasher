@@ -6,7 +6,7 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-await page.goto('http://localhost:8528/?debug=1', { waitUntil: 'networkidle' });
+await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
 await page.waitForFunction(() => window.__astro && window.__astro.getState().state === 'menu', null, { timeout: 15000 });
 await page.waitForTimeout(1500);
 await page.screenshot({ path: `qa/${shots}-menu.png` });
@@ -21,7 +21,8 @@ await page.waitForTimeout(1800);
 await page.screenshot({ path: `qa/${shots}-gameplay.png` });
 // dash + slash burst for juice shot
 const box = await page.locator('#game').boundingBox();
-const gx = (x) => box.x + x * (box.width / 960), gy = (y) => box.y + y * (box.height / 640);
+const camInfo = await page.evaluate(() => window.__astro.getCam());
+const gx = (x) => box.x + camInfo.ox + x * camInfo.scale, gy = (y) => box.y + camInfo.oy + y * camInfo.scale;
 await page.mouse.move(gx(620), gy(320));
 await page.keyboard.down('d');
 await page.keyboard.press(' ');

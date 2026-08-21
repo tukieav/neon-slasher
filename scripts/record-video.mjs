@@ -12,13 +12,14 @@ const dir = join(root, 'marketing', 'rec-' + mode);
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const ctx = await browser.newContext({ viewport: size, recordVideo: { dir, size } });
 const page = await ctx.newPage();
-await page.goto('http://localhost:8528/?debug=1', { waitUntil: 'networkidle' });
+await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 
 const W = 960, H = 640;
 const bbox = await page.locator('#game').boundingBox();
-const gx = (x) => bbox.x + x * (bbox.width / W);
-const gy = (y) => bbox.y + y * (bbox.height / H);
+const camInfo = await page.evaluate(() => window.__astro.getCam());
+const gx = (x) => bbox.x + camInfo.ox + x * camInfo.scale;
+const gy = (y) => bbox.y + camInfo.oy + y * camInfo.scale;
 const getState = () => page.evaluate(() => window.__astro.getState());
 
 // click PLAY (try several heights)

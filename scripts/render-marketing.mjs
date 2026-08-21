@@ -22,12 +22,13 @@ for (const c of covers) {
 
 // gameplay screenshots — play via debug hook, capture combo moments
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
-await page.goto('http://localhost:8528/?debug=1', { waitUntil: 'networkidle' });
+await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 const W = 960, H = 640;
 const bbox = await page.locator('#game').boundingBox();
-const gx = (x) => bbox.x + x * (bbox.width / W);
-const gy = (y) => bbox.y + y * (bbox.height / H);
+const camInfo = await page.evaluate(() => window.__astro.getCam());
+const gx = (x) => bbox.x + camInfo.ox + x * camInfo.scale;
+const gy = (y) => bbox.y + camInfo.oy + y * camInfo.scale;
 await page.evaluate(() => window.__astro.startGame());
 await page.waitForTimeout(1500);
 

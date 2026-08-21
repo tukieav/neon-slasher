@@ -9,15 +9,42 @@ const CX = W / 2, CY = H / 2;
 const ARENA_R = 280;
 
 const canvas = document.getElementById('game');
-canvas.width = W; canvas.height = H;
 const g = canvas.getContext('2d');
 
+// ---------- full-viewport canvas + camera (logic stays in 960x640 world space) ----------
+let VW = 1280, VH = 720, DPR = 1;
+const cam = { scale: 1, ox: 0, oy: 0 };
+let curCam = { s: 1, ox: 0, oy: 0 };  // effective camera this frame (intro sweep aware)
+let envCanvas = null;                  // screen-space cyberpunk surroundings (rebuilt on resize)
+let introT = 0;                        // intro camera sweep timer (1.5s, skippable)
 function resize() {
-  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
-  canvas.style.width = (W * scale) + 'px';
-  canvas.style.height = (H * scale) + 'px';
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  VW = Math.max(320, window.innerWidth);
+  VH = Math.max(240, window.innerHeight);
+  canvas.width = Math.round(VW * DPR);
+  canvas.height = Math.round(VH * DPR);
+  canvas.style.width = VW + 'px';
+  canvas.style.height = VH + 'px';
+  cam.scale = Math.min(VW / W, VH / H);
+  cam.ox = (VW - W * cam.scale) / 2;
+  cam.oy = (VH - H * cam.scale) / 2;
+  envCanvas = null;
 }
 window.addEventListener('resize', resize); resize();
+
+function effectiveCam() {
+  if (introT > 0 && state === 'playing') {
+    const p = 1 - introT / 1.5;
+    const e = 1 - Math.pow(1 - p, 3); // ease-out cubic
+    const z = 1.45 - 0.45 * e;
+    const ang = (1 - e) * 1.1;
+    const s = cam.scale * z;
+    const fx = CX + Math.cos(ang) * 60 * (1 - e);
+    const fy = CY + Math.sin(ang) * 40 * (1 - e);
+    return { s, ox: VW / 2 - fx * s, oy: VH / 2 - fy * s };
+  }
+  return { s: cam.scale, ox: cam.ox, oy: cam.oy };
+}
 
 // ---------- state ----------
 let state = 'loading'; // loading -> menu -> playing -> gameover (+shop)
@@ -28,6 +55,7 @@ let shake = 0, hurtFlash = 0, slowmo = 0, timeScale = 1;
 let hitStop = 0;           // brief freeze on hit (juice)
 let debris = [];           // sliced robot halves
 let flashes = [];          // radial light flashes (deflect etc.)
+let beams = [];            // teleport light columns at enemy spawn points
 let waveBanner = 0, waveBannerText = '';
 let secondWindUsed = false, secondWindShield = 0;
 let killsTotal = 0;
@@ -36,6 +64,8 @@ let paused = false;
 let tPulse = 0;
 let spawnQueue = [];
 let spawnTimer = 0;
+let spawnGap = 0.35;
+let deathT = 0;            // time since death (explosion -> stats overlay fade-in)
 let stats = null;          // per-run derived stats from meta upgrades + perk
 let runCores = 0;          // cores collected this run (banked on game over)
 let fever = 0;             // combo fever buff timer
@@ -72,7 +102,7 @@ function reset() {
   enemies = []; bullets = []; particles = []; floats = []; pickups = []; cores = [];
   score = 0; wave = 0; combo = 0; comboTimer = 0; multiplier = 1;
   shake = 0; hurtFlash = 0; slowmo = 0; timeScale = 1;
-  hitStop = 0; debris = []; flashes = [];
+  hitStop = 0; debris = []; flashes = []; beams = [];
   secondWindUsed = false; secondWindShield = 0; killsTotal = 0;
   spawnQueue = []; spawnTimer = 0;
   runCores = 0; fever = 0; feverUsedAtCombo = 0; vampireKills = 0;
@@ -96,8 +126,8 @@ function startWave(n) {
     q.push('boss');
     for (let i = 0; i < 2 + Math.floor(n / 5); i++) q.push('melee');
   } else {
-    // gentler ramp for the first ~minute (waves 1-3), then normal growth
-    const count = n <= 3 ? 2 + n : 3 + n * 2;
+    // wave 1: instant spectacle — 5 bots teleporting in; then gentle ramp, then normal growth
+    const count = n === 1 ? 5 : n <= 3 ? 2 + n : 3 + n * 2;
     for (let i = 0; i < count; i++) {
       const r = Math.random();
       if (n >= 4 && r < 0.12) q.push('shield');
@@ -107,7 +137,7 @@ function startWave(n) {
       else q.push('melee');
     }
   }
-  spawnQueue = q; spawnTimer = 0.3;
+  spawnQueue = q; spawnTimer = n === 1 ? 0.12 : 0.3; spawnGap = n === 1 ? 0.16 : 0.35;
   // heart pickup every 3 waves if hurt
   if (n > 1 && n % 3 === 0 && hero.hp < hero.hpMax) {
     const a = Math.random() * Math.PI * 2;
@@ -120,6 +150,14 @@ function spawnEnemy(type, px, py) {
   const x = px != null ? px : CX + Math.cos(a) * (ARENA_R - 14);
   const y = py != null ? py : CY + Math.sin(a) * (ARENA_R - 14);
   const wv = wave;
+  // teleport column of light at the spawn point
+  const beamHue = { melee: 185, shooter: 300, kamikaze: 20, shield: 130, splitter: 50, mini: 50, boss: 265, twin: 335 }[type] || 185;
+  beams.push({ x, y, t: 0, life: 0.55, hue: beamHue });
+  flashes.push({ x, y, t: 0, life: 0.4, r: 40, hue: beamHue });
+  for (let i = 0; i < 8; i++) {
+    const pa = Math.random() * Math.PI * 2;
+    particles.push({ x, y, vx: Math.cos(pa) * 90, vy: Math.sin(pa) * 90 - 40, life: 0.4, t: 0, hue: beamHue, spring: false, r: 2 });
+  }
   if (type === 'melee') {
     enemies.push({ type, x, y, hp: 1, r: 14, speed: 70 + wv * 4, t: 0, spawn: 0.6, hue: 185 });
   } else if (type === 'shooter') {
@@ -322,6 +360,18 @@ function damageHero() {
 
 function gameOver() {
   state = 'gameover';
+  deathT = 0;
+  // spectacular death explosion: multi-ring blast + debris + slowmo shake
+  shake = 26;
+  flashes.push({ x: hero.x, y: hero.y, t: 0, life: 0.7, r: 160, hue: 0 });
+  flashes.push({ x: hero.x, y: hero.y, t: 0, life: 0.5, r: 90, hue: 160 });
+  burst(hero.x, hero.y, 160, 46, 320);
+  burst(hero.x, hero.y, 0, 30, 220);
+  burst(hero.x, hero.y, 45, 24, 260);
+  for (let i = 0; i < 6; i++) {
+    const a = Math.random() * Math.PI * 2;
+    debris.push({ x: hero.x, y: hero.y, vx: Math.cos(a) * (120 + Math.random() * 160), vy: Math.sin(a) * (120 + Math.random() * 160) - 60, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 12, r: 6 + Math.random() * 6, side: Math.random() < 0.5 ? 1 : -1, hue: 160, t: 0, life: 1.2 });
+  }
   gameplayStop();
   audio.gameOverSound();
   if (score > best) { best = score; saveBest(best); }
@@ -335,6 +385,7 @@ function gameOver() {
 function startGame() {
   reset();
   state = 'playing';
+  introT = 1.5; // cinematic camera sweep over the arena (skippable with any input)
   gameplayStart();
   audio.startMusic();
   startWave(1);
@@ -342,8 +393,9 @@ function startGame() {
 
 async function playAgain() {
   if (adBusy) return;
-  // instant restart if an ad ran recently — never make the player wait twice a minute
-  if (performance.now() - lastAdAt < 60000) { startGame(); return; }
+  // INSTANT retry — never make the player wait after death (quality-first).
+  // Midgame ad only if one hasn't run for 3+ minutes.
+  if (performance.now() - lastAdAt < 180000) { startGame(); return; }
   adBusy = true;
   await requestAd('midgame', {
     onStart: () => { audio.setMuted(true); },
@@ -394,6 +446,8 @@ async function secondWind() {
 // ---------- update ----------
 function update(dt) {
   tPulse += dt;
+  if (introT > 0) introT = Math.max(0, introT - dt);
+  if (state === 'gameover') deathT += dt;
   if (state !== 'playing') {
     updateFx(dt);
     return;
@@ -450,7 +504,7 @@ function update(dt) {
   // spawn queue
   if (spawnQueue.length > 0) {
     spawnTimer -= sdt;
-    if (spawnTimer <= 0) { spawnEnemy(spawnQueue.shift()); spawnTimer = 0.35; }
+    if (spawnTimer <= 0) { spawnEnemy(spawnQueue.shift()); spawnTimer = spawnGap; }
   }
 
   // enemies
@@ -626,6 +680,8 @@ function updateFx(dt) {
   debris = debris.filter(d => d.t < d.life);
   for (const fl of flashes) fl.t += dt;
   flashes = flashes.filter(fl => fl.t < fl.life);
+  for (const b of beams) b.t += dt;
+  beams = beams.filter(b => b.t < b.life);
   for (const f of floats) { f.t += dt; f.y -= 30 * dt; }
   floats = floats.filter(f => f.t < 1.2);
   if (hero) {
@@ -658,19 +714,19 @@ function buildFloor() {
   floorCanvas.width = W; floorCanvas.height = H;
   const f = floorCanvas.getContext('2d');
   const rnd = seededRand(1337);
-  // deep gradient bg
-  const bg = f.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#04050d'); bg.addColorStop(0.55, '#070818'); bg.addColorStop(1, '#0b0620');
-  f.fillStyle = bg; f.fillRect(0, 0, W, H);
-  // faint outer grid
-  f.strokeStyle = 'rgba(50,70,160,0.06)'; f.lineWidth = 1;
-  for (let x = 0; x <= W; x += 48) { f.beginPath(); f.moveTo(x, 0); f.lineTo(x, H); f.stroke(); }
-  for (let y = 0; y <= H; y += 48) { f.beginPath(); f.moveTo(0, y); f.lineTo(W, y); f.stroke(); }
+  // NOTE: outside the arena stays TRANSPARENT — the screen-space cyberpunk
+  // environment (crowd, billboards, drones) shows through there.
+  // soft ground glow under the arena disk
+  const halo = f.createRadialGradient(CX, CY, ARENA_R * 0.8, CX, CY, ARENA_R * 1.35);
+  halo.addColorStop(0, 'rgba(20,40,90,0.55)');
+  halo.addColorStop(1, 'rgba(20,40,90,0)');
+  f.fillStyle = halo;
+  f.beginPath(); f.arc(CX, CY, ARENA_R * 1.35, 0, Math.PI * 2); f.fill();
   // arena floor: clipped tech panels
   f.save();
   f.beginPath(); f.arc(CX, CY, ARENA_R, 0, Math.PI * 2); f.clip();
   const fg = f.createRadialGradient(CX, CY - 60, 40, CX, CY, ARENA_R);
-  fg.addColorStop(0, '#101a38'); fg.addColorStop(0.7, '#0b1228'); fg.addColorStop(1, '#080c1e');
+  fg.addColorStop(0, '#16234a'); fg.addColorStop(0.7, '#101835'); fg.addColorStop(1, '#0b1128');
   f.fillStyle = fg; f.fillRect(CX - ARENA_R, CY - ARENA_R, ARENA_R * 2, ARENA_R * 2);
   // hex/rect tech plates with tone variance
   const PS = 56;
@@ -733,10 +789,6 @@ function buildFloor() {
     f.fillRect(-10, -2, 5, 4); f.fillRect(5, -2, 5, 4);
     f.restore();
   }
-  // vignette
-  const vg = f.createRadialGradient(CX, CY, ARENA_R * 0.6, CX, CY, W * 0.72);
-  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,5,0.55)');
-  f.fillStyle = vg; f.fillRect(0, 0, W, H);
 }
 
 function drawFloorDynamic() {
@@ -781,13 +833,312 @@ function drawFloorDynamic() {
   g.restore();
 }
 
-function render() {
+// ---------- screen-space cyberpunk environment (crowd stands, billboards, drones, fog) ----------
+let envBillboards = [];   // {x,y,w,h,kind}
+let envSparkPts = [];     // damaged-panel spark emitters (screen space)
+let envCrowd = [];        // animated front-row spectators {x,y,r,hue,ph}
+function buildEnv() {
+  envCanvas = document.createElement('canvas');
+  envCanvas.width = Math.round(VW * DPR);
+  envCanvas.height = Math.round(VH * DPR);
+  const f = envCanvas.getContext('2d');
+  f.scale(DPR, DPR);
+  const rnd = seededRand(4242);
+  const acx = cam.ox + CX * cam.scale, acy = cam.oy + CY * cam.scale;
+  const ar = ARENA_R * cam.scale;
+  // deep gradient sky
+  const bg = f.createLinearGradient(0, 0, 0, VH);
+  bg.addColorStop(0, '#070a1e'); bg.addColorStop(0.5, '#0a0d24'); bg.addColorStop(1, '#130a2c');
+  f.fillStyle = bg; f.fillRect(0, 0, VW, VH);
+  // distant megacity skyline (two parallax silhouette layers with lit windows)
+  for (const layer of [{ h: 0.34, col: 'rgba(16,22,52,0.9)', win: 0.35 }, { h: 0.22, col: 'rgba(26,34,74,0.9)', win: 0.5 }]) {
+    let x = -20;
+    while (x < VW + 20) {
+      const bw = 36 + rnd() * 90, bh = VH * layer.h * (0.45 + rnd() * 0.75);
+      f.fillStyle = layer.col;
+      f.fillRect(x, VH * 0.52 - bh, bw, bh);
+      // antenna
+      if (rnd() > 0.6) { f.fillRect(x + bw / 2 - 1, VH * 0.52 - bh - 14, 2, 14); f.fillStyle = 'rgba(255,80,120,0.8)'; f.fillRect(x + bw / 2 - 1.5, VH * 0.52 - bh - 16, 3, 3); }
+      // windows
+      for (let wy = VH * 0.52 - bh + 6; wy < VH * 0.52 - 8; wy += 9) {
+        for (let wx = x + 4; wx < x + bw - 4; wx += 8) {
+          if (rnd() < layer.win * 0.4) {
+            const hu = [185, 300, 45, 330][Math.floor(rnd() * 4)];
+            f.fillStyle = 'hsla(' + hu + ',90%,65%,' + (0.25 + rnd() * 0.5) + ')';
+            f.fillRect(wx, wy, 3, 4);
+          }
+        }
+      }
+      x += bw + 2 + rnd() * 8;
+    }
+  }
+  // faint perspective grid on the lower half (stadium floor around arena)
+  f.strokeStyle = 'rgba(60,90,200,0.10)'; f.lineWidth = 1;
+  for (let i = 0; i < 14; i++) {
+    const yy = VH * 0.52 + Math.pow(i / 14, 1.6) * VH * 0.5;
+    f.beginPath(); f.moveTo(0, yy); f.lineTo(VW, yy); f.stroke();
+  }
+  for (let i = -10; i <= 10; i++) {
+    f.beginPath(); f.moveTo(VW / 2 + i * VW * 0.06, VH * 0.52); f.lineTo(VW / 2 + i * VW * 0.24, VH + 2); f.stroke();
+  }
+  // ---- audience terraces: concentric stands around the arena, packed with robot fans ----
+  envCrowd = [];
+  for (let ring = 0; ring < 4; ring++) {
+    const rr = ar + 34 + ring * (34 + ring * 6);
+    // terrace band
+    f.strokeStyle = 'rgba(24,36,80,0.95)'; f.lineWidth = 26 + ring * 4;
+    f.beginPath(); f.arc(acx, acy, rr, 0, Math.PI * 2); f.stroke();
+    f.strokeStyle = 'rgba(70,110,255,0.16)'; f.lineWidth = 1.5;
+    f.beginPath(); f.arc(acx, acy, rr - 12 - ring * 2, 0, Math.PI * 2); f.stroke();
+    // robot spectators: silhouette bodies + glowing eyes
+    const n = Math.floor((Math.PI * 2 * rr) / (16 - ring * 1.5));
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2 + rnd() * 0.05;
+      const px = acx + Math.cos(a) * rr, py = acy + Math.sin(a) * rr;
+      if (px < -20 || px > VW + 20 || py < -20 || py > VH + 20) continue;
+      if (rnd() < 0.12) continue; // empty seats
+      const s = (0.75 + rnd() * 0.5) * (1 + ring * 0.12);
+      const hu = [185, 300, 45, 330, 130][Math.floor(rnd() * 5)];
+      // body silhouette
+      f.fillStyle = 'rgba(10,16,38,0.95)';
+      f.beginPath(); f.arc(px, py + 3 * s, 6.5 * s, Math.PI, 0); f.fill();
+      f.fillRect(px - 6.5 * s, py + 3 * s, 13 * s, 6 * s);
+      // head
+      f.beginPath(); f.arc(px, py - 4 * s, 4.2 * s, 0, Math.PI * 2); f.fill();
+      // glowing eyes
+      f.fillStyle = 'hsla(' + hu + ',100%,65%,0.9)';
+      f.fillRect(px - 2.6 * s, py - 5 * s, 1.8 * s, 1.6 * s);
+      f.fillRect(px + 0.8 * s, py - 5 * s, 1.8 * s, 1.6 * s);
+      if (ring === 0 && envCrowd.length < 60 && rnd() < 0.5) envCrowd.push({ x: px, y: py, r: s, hue: hu, ph: rnd() * 6.28 });
+    }
+  }
+  // ---- hanging cables from the top with signal lights ----
+  for (let i = 0; i < 7; i++) {
+    const x0 = rnd() * VW, x1 = x0 + (rnd() - 0.5) * 300;
+    const sag = 30 + rnd() * 70;
+    f.strokeStyle = 'rgba(40,60,120,0.55)'; f.lineWidth = 2 + rnd() * 2;
+    f.beginPath(); f.moveTo(x0, -4);
+    f.quadraticCurveTo((x0 + x1) / 2, sag * 2, x1, -4);
+    f.stroke();
+    f.fillStyle = 'hsla(' + (rnd() < 0.5 ? 0 : 130) + ',100%,60%,0.85)';
+    f.beginPath(); f.arc((x0 + x1) / 2, sag, 2.5, 0, Math.PI * 2); f.fill();
+  }
+  // ---- vertical neon strips + kanji-style glyph signs on left/right edges ----
+  const glyphs = 'ネオンスラッシュ斬撃戦闘電脳';
+  for (const side of [0, 1]) {
+    const ex = side === 0 ? 14 + rnd() * 30 : VW - 14 - rnd() * 30;
+    const hu = side === 0 ? 300 : 185;
+    f.save();
+    f.shadowColor = 'hsl(' + hu + ',100%,60%)'; f.shadowBlur = 14;
+    f.strokeStyle = 'hsla(' + hu + ',100%,65%,0.75)'; f.lineWidth = 3;
+    f.beginPath(); f.moveTo(ex, VH * 0.12); f.lineTo(ex, VH * 0.8); f.stroke();
+    // vertical glyph sign
+    f.fillStyle = 'hsla(' + hu + ',100%,75%,0.85)';
+    f.font = '700 ' + Math.round(16 + VH * 0.012) + 'px sans-serif';
+    f.textAlign = 'center';
+    for (let i2 = 0; i2 < 6; i2++) {
+      f.fillText(glyphs[Math.floor(rnd() * glyphs.length)], ex + (side === 0 ? 22 : -22), VH * 0.2 + i2 * (18 + VH * 0.014));
+    }
+    f.restore();
+  }
+  // ---- floor pipes along the bottom + hazard stripes ----
+  f.fillStyle = 'rgba(18,26,58,0.9)';
+  f.fillRect(0, VH - 16, VW, 16);
+  f.strokeStyle = 'rgba(90,140,255,0.25)'; f.lineWidth = 1.5;
+  f.beginPath(); f.moveTo(0, VH - 16); f.lineTo(VW, VH - 16); f.stroke();
+  for (let x = 0; x < VW; x += 34) {
+    f.fillStyle = 'rgba(255,200,40,0.20)';
+    f.beginPath(); f.moveTo(x, VH); f.lineTo(x + 12, VH - 16); f.lineTo(x + 20, VH - 16); f.lineTo(x + 8, VH); f.closePath(); f.fill();
+  }
+  // ---- holo-billboard frames (content drawn per-frame in drawEnvDynamic) ----
+  envBillboards = [];
+  const bbw = Math.max(150, VW * 0.15), bbh = bbw * 0.42;
+  const spots = [
+    { x: VW * 0.135, y: VH * 0.14, kind: 'wave' },
+    { x: VW * 0.865, y: VH * 0.14, kind: 'score' },
+    { x: VW * 0.09, y: VH * 0.72, kind: 'hype' },
+    { x: VW * 0.91, y: VH * 0.72, kind: 'brand' },
+  ];
+  for (const sp of spots) {
+    const bx = sp.x - bbw / 2, by = sp.y - bbh / 2;
+    // support strut
+    f.strokeStyle = 'rgba(50,70,140,0.8)'; f.lineWidth = 5;
+    f.beginPath(); f.moveTo(sp.x, by + bbh); f.lineTo(sp.x, by + bbh + 26); f.stroke();
+    // frame
+    f.fillStyle = 'rgba(8,12,30,0.97)';
+    f.strokeStyle = 'rgba(90,160,255,0.55)'; f.lineWidth = 2;
+    f.beginPath();
+    f.moveTo(bx + 10, by); f.lineTo(bx + bbw, by); f.lineTo(bx + bbw, by + bbh - 10);
+    f.lineTo(bx + bbw - 10, by + bbh); f.lineTo(bx, by + bbh); f.lineTo(bx, by + 10);
+    f.closePath(); f.fill(); f.stroke();
+    envBillboards.push({ x: bx, y: by, w: bbw, h: bbh, kind: sp.kind });
+  }
+  // spark emitters on damaged wall panels (screen ring just outside arena)
+  envSparkPts = [];
+  const rnd2 = seededRand(777);
+  for (let i = 0; i < 6; i++) {
+    const a = rnd2() * Math.PI * 2;
+    envSparkPts.push({ x: acx + Math.cos(a) * (ar + 22 * cam.scale), y: acy + Math.sin(a) * (ar + 22 * cam.scale), ph: rnd2() * 10 });
+  }
+  // vignette
+  const vg = f.createRadialGradient(VW / 2, VH / 2, Math.min(VW, VH) * 0.38, VW / 2, VH / 2, Math.max(VW, VH) * 0.72);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,8,0.5)');
+  f.fillStyle = vg; f.fillRect(0, 0, VW, VH);
+}
+
+function drawEnvDynamic() {
+  // (screen space; called with g transform = DPR identity)
+  const acx = cam.ox + CX * cam.scale, acy = cam.oy + CY * cam.scale;
+  const ar = ARENA_R * cam.scale;
+  // animated front-row fans: bouncing + waving arms
+  for (const c of envCrowd) {
+    const bob = Math.abs(Math.sin(tPulse * 2.2 + c.ph)) * 3 * c.r;
+    g.fillStyle = 'rgba(12,18,42,0.95)';
+    g.beginPath(); g.arc(c.x, c.y - 4 * c.r - bob, 4.2 * c.r, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'hsla(' + c.hue + ',100%,65%,0.95)';
+    g.fillRect(c.x - 2.6 * c.r, c.y - 5 * c.r - bob, 1.8 * c.r, 1.6 * c.r);
+    g.fillRect(c.x + 0.8 * c.r, c.y - 5 * c.r - bob, 1.8 * c.r, 1.6 * c.r);
+    // waving arm
+    if (Math.sin(tPulse * 3 + c.ph) > 0.3) {
+      g.strokeStyle = 'rgba(12,18,42,0.95)'; g.lineWidth = 2 * c.r;
+      g.beginPath(); g.moveTo(c.x + 4 * c.r, c.y + 2 * c.r);
+      g.lineTo(c.x + 7 * c.r, c.y - 4 * c.r - bob * 1.6); g.stroke();
+    }
+  }
+  // camera flashes in the crowd
+  for (let i = 0; i < 5; i++) {
+    const seed = Math.floor(tPulse * 2.5) * 7 + i * 131;
+    const fr = ((seed * 9301 + 49297) % 233280) / 233280;
+    if (fr < 0.4) {
+      const a = fr * 15.7 + i * 1.3, rr = ar + 40 + (fr * 997 % 1) * 120;
+      const fx2 = acx + Math.cos(a) * rr, fy2 = acy + Math.sin(a) * rr;
+      const tw = (tPulse * 2.5) % 1;
+      if (tw < 0.35 && fx2 > 0 && fx2 < VW && fy2 > 0 && fy2 < VH) {
+        g.fillStyle = 'rgba(255,255,255,' + (0.7 * (1 - tw / 0.35)) + ')';
+        g.beginPath(); g.arc(fx2, fy2, 2.2, 0, Math.PI * 2); g.fill();
+      }
+    }
+  }
+  // searchlight beams sweeping the stadium
   g.save();
+  g.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 2; i++) {
+    const bx = VW * (0.2 + i * 0.6);
+    const sw = Math.sin(tPulse * 0.5 + i * 2.4) * VW * 0.28;
+    const grd = g.createLinearGradient(bx, 0, bx + sw, VH);
+    grd.addColorStop(0, 'hsla(' + (i === 0 ? 300 : 185) + ',100%,70%,0.10)');
+    grd.addColorStop(1, 'hsla(' + (i === 0 ? 300 : 185) + ',100%,70%,0)');
+    g.fillStyle = grd;
+    g.beginPath(); g.moveTo(bx - 12, -4); g.lineTo(bx + 12, -4);
+    g.lineTo(bx + sw + 70, VH); g.lineTo(bx + sw - 70, VH); g.closePath(); g.fill();
+  }
+  g.restore();
+  // patrol drones with blinking nav lights + rotor glow
+  for (let i = 0; i < 5; i++) {
+    const dir = i % 2 === 0 ? 1 : -1;
+    const spd = 34 + i * 14;
+    const dx = ((tPulse * spd * dir + i * 337) % (VW + 240) + VW + 240) % (VW + 240) - 120;
+    const dy = VH * (0.08 + i * 0.055) + Math.sin(tPulse * 1.3 + i * 2.1) * 14;
+    g.save(); g.translate(dx, dy);
+    g.fillStyle = 'rgba(14,20,46,0.95)';
+    g.strokeStyle = 'rgba(90,150,255,0.5)'; g.lineWidth = 1.4;
+    g.beginPath(); g.moveTo(-10, 0); g.lineTo(-3, -5); g.lineTo(3, -5); g.lineTo(10, 0); g.lineTo(3, 4); g.lineTo(-3, 4); g.closePath();
+    g.fill(); g.stroke();
+    // rotor glow discs
+    g.fillStyle = 'hsla(185,100%,70%,' + (0.25 + Math.sin(tPulse * 30 + i) * 0.12) + ')';
+    g.beginPath(); g.ellipse(-9, -6, 6, 1.8, 0, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.ellipse(9, -6, 6, 1.8, 0, 0, Math.PI * 2); g.fill();
+    // blinking nav light
+    if (Math.sin(tPulse * 6 + i * 2) > 0.4) {
+      g.shadowColor = '#ff4060'; g.shadowBlur = 8;
+      g.fillStyle = '#ff5070';
+      g.beginPath(); g.arc(0, 5, 2, 0, Math.PI * 2); g.fill();
+      g.shadowBlur = 0;
+    }
+    // occasional scan beam down toward the arena
+    if (Math.sin(tPulse * 0.9 + i * 1.7) > 0.82) {
+      g.fillStyle = 'hsla(130,100%,60%,0.08)';
+      g.beginPath(); g.moveTo(-3, 6); g.lineTo(3, 6); g.lineTo(26, 90); g.lineTo(-26, 90); g.closePath(); g.fill();
+    }
+    g.restore();
+  }
+  // holo-billboards: live stats content with flicker + scanlines
+  for (let bi = 0; bi < envBillboards.length; bi++) {
+    const b = envBillboards[bi];
+    const flick = 0.82 + Math.sin(tPulse * 17 + bi * 3.1) * 0.08 + (Math.sin(tPulse * 1.9 + bi) > 0.97 ? -0.35 : 0);
+    g.save();
+    g.globalAlpha = Math.max(0.3, flick);
+    let big = '', small = '', hue = 185;
+    if (b.kind === 'wave') { big = state === 'menu' ? 'READY' : 'WAVE ' + Math.max(1, wave); small = 'LIVE ARENA FEED'; hue = 185; }
+    else if (b.kind === 'score') { big = state === 'menu' ? 'BEST ' + best : '' + score; small = state === 'menu' ? 'HIGH SCORE' : 'SCORE'; hue = 300; }
+    else if (b.kind === 'hype') { big = combo >= 2 ? combo + ' COMBO!' : ['FIGHT!', 'SLASH!', '斬撃!!'][Math.floor(tPulse / 2.5) % 3]; small = 'CROWD CAM'; hue = 45; }
+    else { big = ['ROBO-COLA', 'NEO TOKYO', 'CYBER-DYNE'][Math.floor(tPulse / 4) % 3]; small = 'SPONSOR'; hue = 330; }
+    g.shadowColor = 'hsl(' + hue + ',100%,60%)'; g.shadowBlur = 12;
+    g.fillStyle = 'hsla(' + hue + ',100%,72%,0.95)';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = '900 ' + Math.round(b.h * 0.34) + 'px "Segoe UI", sans-serif';
+    g.fillText(big, b.x + b.w / 2, b.y + b.h * 0.44);
+    g.shadowBlur = 4;
+    g.fillStyle = 'hsla(' + hue + ',80%,80%,0.6)';
+    g.font = '600 ' + Math.round(b.h * 0.14) + 'px "Segoe UI", sans-serif';
+    g.fillText(small, b.x + b.w / 2, b.y + b.h * 0.8);
+    // scanline sweep
+    const sy = b.y + ((tPulse * 40 + bi * 20) % b.h);
+    g.shadowBlur = 0;
+    g.fillStyle = 'hsla(' + hue + ',100%,80%,0.12)';
+    g.fillRect(b.x + 2, sy, b.w - 4, 3);
+    g.restore();
+  }
+  // sparks from damaged wall panels
+  for (const spk of envSparkPts) {
+    const cyc = (tPulse + spk.ph) % 3.1;
+    if (cyc < 0.4) {
+      g.save();
+      g.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 4; i++) {
+        const t2 = cyc + i * 0.03;
+        const sx = spk.x + Math.sin(spk.ph + i * 9) * 20 * t2;
+        const syy = spk.y + 60 * t2 * t2 * 3;
+        g.fillStyle = 'hsla(' + (40 + i * 6) + ',100%,' + (70 - t2 * 80) + '%,' + (1 - cyc / 0.4) + ')';
+        g.fillRect(sx, syy, 2, 2);
+      }
+      g.restore();
+    }
+  }
+  // drifting fog banks near the bottom
+  g.save();
+  for (let i = 0; i < 2; i++) {
+    const fx3 = ((tPulse * (8 + i * 5) + i * 500) % (VW + 600)) - 300;
+    const fg2 = g.createRadialGradient(fx3, VH * 0.92, 10, fx3, VH * 0.92, VW * 0.3);
+    fg2.addColorStop(0, 'rgba(80,110,220,0.05)');
+    fg2.addColorStop(1, 'rgba(80,110,220,0)');
+    g.fillStyle = fg2;
+    g.fillRect(0, VH * 0.6, VW, VH * 0.4);
+  }
+  g.restore();
+}
+
+function fullRect() {
+  // covers the whole viewport while inside the UI (world-scale) transform
+  g.fillRect(-cam.ox / cam.scale - 4, -cam.oy / cam.scale - 4, VW / cam.scale + 8, VH / cam.scale + 8);
+}
+
+function render() {
+  // ---- screen space: cyberpunk stadium surroundings (fills every pixel) ----
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  if (!envCanvas) buildEnv();
+  g.drawImage(envCanvas, 0, 0, VW, VH);
+  drawEnvDynamic();
+
+  // ---- world space (arena + entities), with intro sweep camera ----
+  curCam = effectiveCam();
+  g.save();
+  g.translate(curCam.ox, curCam.oy);
+  g.scale(curCam.s, curCam.s);
   if (shake > 0) g.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
 
   // pre-rendered tech floor + animated circuit energy + neon reflections
   if (!floorCanvas) buildFloor();
-  g.fillStyle = '#04050d'; g.fillRect(-20, -20, W + 40, H + 40);
   g.drawImage(floorCanvas, 0, 0);
   drawFloorDynamic();
 
@@ -796,8 +1147,48 @@ function render() {
   const ringHue = fever > 0 ? 50 : 195;
   neonCircle(CX, CY, ARENA_R * pulse, ringHue, fever > 0 ? 34 : 22, 0.9);
   neonCircle(CX, CY, ARENA_R * pulse + 8, fever > 0 ? 35 : 265, 12, 0.35);
+  // animated energy rings at the arena edge: rotating dash segments + expanding pulse
+  g.save();
+  for (const ring of [{ r: ARENA_R + 4, n: 24, sp: 0.5, hue: 195, a: 0.5 }, { r: ARENA_R + 14, n: 16, sp: -0.32, hue: 300, a: 0.35 }]) {
+    g.strokeStyle = 'hsla(' + (fever > 0 ? 50 : ring.hue) + ',100%,65%,' + ring.a + ')';
+    g.lineWidth = 3;
+    g.shadowColor = 'hsl(' + ring.hue + ',100%,60%)'; g.shadowBlur = 8;
+    for (let i = 0; i < ring.n; i++) {
+      const a0 = (i / ring.n) * Math.PI * 2 + tPulse * ring.sp;
+      g.beginPath(); g.arc(CX, CY, ring.r, a0, a0 + (Math.PI * 2 / ring.n) * 0.45); g.stroke();
+    }
+  }
+  // expanding pulse ring every ~2.4s
+  const pw = (tPulse % 2.4) / 2.4;
+  g.strokeStyle = 'hsla(185,100%,70%,' + (0.35 * (1 - pw)) + ')';
+  g.lineWidth = 2; g.shadowBlur = 12;
+  g.beginPath(); g.arc(CX, CY, ARENA_R * (1 + pw * 0.1), 0, Math.PI * 2); g.stroke();
+  g.restore();
 
   if (state === 'playing' || state === 'gameover') {
+    // teleport light columns (enemy spawn beams)
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    for (const b of beams) {
+      const p = b.t / b.life;
+      const wgt = 1 - p;
+      const bw2 = 10 + p * 26;
+      const grad = g.createLinearGradient(b.x, b.y - 300, b.x, b.y);
+      grad.addColorStop(0, 'hsla(' + b.hue + ',100%,75%,0)');
+      grad.addColorStop(0.7, 'hsla(' + b.hue + ',100%,70%,' + (0.5 * wgt) + ')');
+      grad.addColorStop(1, 'hsla(' + b.hue + ',100%,85%,' + (0.85 * wgt) + ')');
+      g.fillStyle = grad;
+      g.fillRect(b.x - bw2 / 2, b.y - 300, bw2, 300);
+      // bright inner core
+      g.fillStyle = 'hsla(' + b.hue + ',100%,92%,' + (0.9 * wgt) + ')';
+      g.fillRect(b.x - 2, b.y - 300 * (1 - p * 0.5), 4, 300 * (1 - p * 0.5));
+      // impact ring on the floor
+      g.strokeStyle = 'hsla(' + b.hue + ',100%,75%,' + (0.8 * wgt) + ')';
+      g.lineWidth = 3 * wgt + 0.5;
+      g.beginPath(); g.ellipse(b.x, b.y, 8 + p * 34, (8 + p * 34) * 0.4, 0, 0, Math.PI * 2); g.stroke();
+    }
+    g.restore();
+
     // pickups
     for (const p of pickups) {
       const s = 1 + Math.sin(p.t * 5) * 0.15;
@@ -839,8 +1230,8 @@ function render() {
       g.restore();
     }
 
-    // hero
-    drawHero();
+    // hero (hidden after death explosion)
+    if (state === 'playing') drawHero();
 
     // sliced robot halves (debris)
     for (const d of debris) {
@@ -906,48 +1297,38 @@ function render() {
     }
   }
 
-  g.restore(); // shake
+  g.restore(); // world space (shake + intro camera)
 
-  // HUD
+  // ---- UI space: standard letterbox-fit transform (stable during intro sweep) ----
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  g.translate(cam.ox, cam.oy);
+  g.scale(cam.scale, cam.scale);
+
+  // HUD (slim: big WAVE/SCORE live on the holo-billboards outside the arena)
   if (state === 'playing' || state === 'gameover') {
-    // cyberpunk HUD plates (chamfered, subtle)
-    g.save();
-    g.fillStyle = 'rgba(8,14,32,0.55)';
-    g.strokeStyle = 'rgba(90,180,255,0.35)'; g.lineWidth = 1.5;
-    // score plate (top-left, angled right edge)
-    g.beginPath(); g.moveTo(0, 0); g.lineTo(230, 0); g.lineTo(206, 70); g.lineTo(0, 70); g.closePath(); g.fill(); g.stroke();
-    // wave plate (top-right, angled left edge)
-    g.beginPath(); g.moveTo(W, 0); g.lineTo(W - 190, 0); g.lineTo(W - 166, 84); g.lineTo(W, 84); g.closePath(); g.fill(); g.stroke();
-    // accent ticks
-    g.strokeStyle = 'rgba(77,255,210,0.6)'; g.lineWidth = 2;
-    g.beginPath(); g.moveTo(0, 70); g.lineTo(60, 70); g.stroke();
-    g.beginPath(); g.moveTo(W, 84); g.lineTo(W - 60, 84); g.stroke();
-    g.restore();
-    g.textAlign = 'left'; g.textBaseline = 'top';
-    g.fillStyle = '#e8f4ff'; g.font = '700 26px "Segoe UI", sans-serif';
-    g.fillText('SCORE ' + score, 18, 14);
-    g.fillStyle = 'rgba(180,210,255,0.7)'; g.font = '600 16px "Segoe UI", sans-serif';
-    g.fillText('BEST ' + best, 18, 46);
-    g.textAlign = 'right';
-    g.fillStyle = '#9ef0ff'; g.font = '700 22px "Segoe UI", sans-serif';
-    g.fillText('WAVE ' + wave, W - 18, 14);
-    // hearts
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    g.fillStyle = '#e8f4ff'; g.font = '700 22px "Segoe UI", sans-serif';
+    g.fillText('SCORE ' + score, CX, 8);
+    g.fillStyle = 'rgba(180,210,255,0.6)'; g.font = '600 14px "Segoe UI", sans-serif';
+    g.fillText('WAVE ' + wave + ' · BEST ' + best, CX, 36);
+    g.textAlign = 'left';
+    // hearts (bottom-right)
     for (let i = 0; i < hero.hpMax; i++) {
-      g.save(); g.translate(W - 30 - i * 30, 58);
+      g.save(); g.translate(W - 30 - i * 30, H - 34);
       g.shadowColor = '#ff4d6d'; g.shadowBlur = 8;
       g.fillStyle = i < hero.hp ? '#ff4d6d' : 'rgba(120,120,140,0.3)';
       heartPath(0, 0, 9); g.fill();
       g.restore();
     }
-    // cores counter
-    g.save(); g.translate(24, 82);
+    // cores counter (bottom-left, above dash bar)
+    g.save(); g.translate(24, H - 64);
     g.shadowColor = '#4dd2ff'; g.shadowBlur = 8;
     g.strokeStyle = '#9ee8ff'; g.fillStyle = 'rgba(30,120,200,0.8)'; g.lineWidth = 1.5;
     g.beginPath(); g.moveTo(0, -6); g.lineTo(5, 0); g.lineTo(0, 6); g.lineTo(-5, 0); g.closePath(); g.fill(); g.stroke();
     g.restore();
     g.textAlign = 'left';
     g.fillStyle = '#9ee8ff'; g.font = '700 16px "Segoe UI", sans-serif';
-    g.fillText('' + runCores, 38, 74);
+    g.fillText('' + runCores, 38, H - 72);
     // fever banner
     if (fever > 0) {
       g.textAlign = 'center';
@@ -970,14 +1351,14 @@ function render() {
     if (combo >= 2) {
       g.textAlign = 'center';
       const cs = 1 + Math.min(combo, 10) * 0.03;
-      g.save(); g.translate(CX, 30); g.scale(cs, cs);
+      g.save(); g.translate(CX, 66); g.scale(cs, cs);
       g.shadowColor = '#ffe14d'; g.shadowBlur = 16;
       g.fillStyle = '#ffe14d'; g.font = '900 26px "Segoe UI", sans-serif';
       g.fillText(combo + ' COMBO  x' + multiplier, 0, 0);
       g.restore();
       // combo timer bar
       g.fillStyle = 'rgba(255,225,77,0.8)';
-      g.fillRect(CX - 60, 64, 120 * (comboTimer / 3), 4);
+      g.fillRect(CX - 60, 98, 120 * (comboTimer / 3), 4);
     }
     // dash cooldown
     g.textAlign = 'left';
@@ -1003,12 +1384,12 @@ function render() {
   // hurt flash
   if (hurtFlash > 0) {
     g.fillStyle = 'rgba(255,40,80,' + (hurtFlash * 0.4) + ')';
-    g.fillRect(0, 0, W, H);
+    fullRect();
   }
   // slowmo tint
   if (slowmo > 0) {
     g.fillStyle = 'rgba(80,200,255,0.08)';
-    g.fillRect(0, 0, W, H);
+    fullRect();
   }
   // combo fever: full-screen neon overdrive
   if (fever > 0 && state === 'playing') {
@@ -1018,7 +1399,7 @@ function render() {
     const og = g.createRadialGradient(CX, CY, ARENA_R * 0.5, CX, CY, W * 0.7);
     og.addColorStop(0, 'rgba(255,220,80,0)');
     og.addColorStop(1, 'rgba(255,180,40,' + (0.10 * fa + Math.sin(tPulse * 8) * 0.03) + ')');
-    g.fillStyle = og; g.fillRect(0, 0, W, H);
+    g.fillStyle = og; fullRect();
     // scanline energy bars racing along top & bottom edges
     g.fillStyle = 'rgba(255,225,77,' + 0.5 * fa + ')';
     const bx = (tPulse * 900) % (W + 240) - 120;
@@ -1506,7 +1887,7 @@ function renderMenu() {
 let shopTab = 0; // 0 upgrades, 1 katanas, 2 perks
 function renderShop() {
   g.fillStyle = 'rgba(4,6,18,0.88)';
-  g.fillRect(0, 0, W, H);
+  fullRect();
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.save();
   g.shadowColor = '#4dd2ff'; g.shadowBlur = 22;
@@ -1610,8 +1991,20 @@ function handleShopPress(p) {
 }
 
 function renderGameOver() {
+  // register hitboxes immediately (clickable even during explosion phase)
+  uiButtons = {};
+  let hy = CY + 16;
+  uiButtons.playAgain = { x: CX, y: hy, w: 340, h: 70 }; hy += 82;
+  if (!secondWindUsed) { uiButtons.secondWind = { x: CX, y: hy, w: 320, h: 50 }; hy += 60; }
+  if (runCores > 0 && !coresDoubled) { uiButtons.doubleCores = { x: CX, y: hy, w: 320, h: 48 }; hy += 58; }
+  uiButtons.toShop = { x: CX, y: hy, w: 200, h: 44 };
+  // phase 1 (~0.55s): raw explosion, no overlay — let the death read
+  const ov = Math.max(0, Math.min(1, (deathT - 0.55) / 0.35));
+  if (ov <= 0) return;
+  g.save();
+  g.globalAlpha = ov;
   g.fillStyle = 'rgba(4,6,18,0.72)';
-  g.fillRect(0, 0, W, H);
+  fullRect();
   g.textAlign = 'center'; g.textBaseline = 'middle';
   g.save();
   g.shadowColor = '#ff4d6d'; g.shadowBlur = 26;
@@ -1626,26 +2019,35 @@ function renderGameOver() {
   g.fillText('◆ +' + (coresDoubled ? runCores * 2 : runCores) + ' CORES BANKED' + (coresDoubled ? ' (x2!)' : ''), CX, CY - 34);
   uiButtons = {};
   let y = CY + 16;
+  // giant pulsing RETRY comes first — instant restart is the hero action
+  const rp = 1 + Math.sin(tPulse * 4) * 0.03;
+  g.save(); g.translate(CX, y); g.scale(rp, rp); g.translate(-CX, -y);
+  uiButtons.playAgain = btn(CX, y, 340, 70, '▶ RETRY', 160);
+  g.restore();
+  y += 82;
   if (!secondWindUsed) {
-    uiButtons.secondWind = btn(CX, y, 340, 56, '▶ SECOND WIND (AD)', 130);
-    y += 68;
+    uiButtons.secondWind = btn(CX, y, 320, 50, '▶ SECOND WIND (AD)', 130);
+    y += 60;
   }
   if (runCores > 0 && !coresDoubled) {
-    uiButtons.doubleCores = btn(CX, y, 340, 52, '▶ DOUBLE CORES (AD)', 200);
-    y += 64;
+    uiButtons.doubleCores = btn(CX, y, 320, 48, '▶ DOUBLE CORES (AD)', 200);
+    y += 58;
   }
-  uiButtons.playAgain = btn(CX, y, 260, 56, 'PLAY AGAIN', 300);
-  uiButtons.toShop = btn(CX, y + 66, 200, 44, 'UPGRADES', 200);
+  uiButtons.toShop = btn(CX, y, 200, 44, 'UPGRADES', 200);
   if (adBusy) {
     g.fillStyle = '#ffe14d'; g.font = '700 18px "Segoe UI", sans-serif';
     g.fillText('Loading ad...', CX, H - 30);
   }
+  g.restore();
 }
 
 // ---------- input ----------
 function canvasPos(clientX, clientY) {
   const r = canvas.getBoundingClientRect();
-  return { x: (clientX - r.left) * (W / r.width), y: (clientY - r.top) * (H / r.height) };
+  // screen -> world (UI transform: cam.scale/ox/oy over CSS pixels)
+  const sx = (clientX - r.left) * (VW / r.width);
+  const sy = (clientY - r.top) * (VH / r.height);
+  return { x: (sx - cam.ox) / cam.scale, y: (sy - cam.oy) / cam.scale };
 }
 
 function inBtn(p, b) {
@@ -1677,6 +2079,7 @@ function handlePress(p) {
 
 window.addEventListener('keydown', (e) => {
   KEYS[e.key.toLowerCase()] = true;
+  if (introT > 0 && state === 'playing') introT = 0; // skip intro sweep
   if (e.key === ' ') { e.preventDefault(); doDash(); }
 });
 window.addEventListener('keyup', (e) => { KEYS[e.key.toLowerCase()] = false; });
@@ -1691,6 +2094,7 @@ canvas.addEventListener('mousedown', (e) => {
   mouseX = p.x; mouseY = p.y;
   if (handlePress(p)) return;
   if (state === 'playing') {
+    if (introT > 0) introT = 0; // skip intro sweep
     if (e.button === 2) doDash();
     else { hero.aim = Math.atan2(p.y - hero.y, p.x - hero.x); doSlash(); }
   }
@@ -1777,6 +2181,8 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
       bullets: bullets ? bullets.length : 0,
     }),
     startGame: () => { if (state === 'menu') startGame(); },
+    getCam: () => ({ scale: cam.scale, ox: cam.ox, oy: cam.oy, vw: VW, vh: VH }),
+    skipIntro: () => { introT = 0; },
   };
 }
 
