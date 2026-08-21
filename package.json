@@ -6,7 +6,14 @@
   "private": true,
   "scripts": {
     "build": "esbuild src/main.js --bundle --minify --outfile=dist/bundle.js && node scripts/pack.mjs",
-    "dev": "esbuild src/main.js --bundle --outfile=dist/bundle.js --watch --servedir=dist"
+    "dev": "esbuild src/main.js --bundle --outfile=dist/bundle.js --watch --servedir=dist",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:viewport": "node tests/viewport-gate.mjs",
+    "test:refresh": "node tests/refresh-rate.mjs",
+    "test:telegraphs": "node tests/telegraph-contract.mjs",
+    "test:hazard": "node tests/hazard-contract.mjs",
+    "test:persistence": "node tests/persistence.mjs",
+    "test:soak": "node tools/e2e-soak.cjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

@@ -7,6 +7,9 @@ import { meta, loadMeta, saveMeta, checkDailyStreak, addCores, UPGRADES, KATANAS
 const W = 960, H = 640;
 const CX = W / 2, CY = H / 2;
 const ARENA_R = 280;
+const FIXED_DT = 1 / 60;
+const MAX_STEPS_PER_FRAME = 5;
+const CAPS = { enemies: 48, bullets: 96, particles: 420, debris: 80, flashes: 48, beams: 48, floats: 32, cores: 48, trail: 36, ghosts: 24, slashArcs: 8 };
 
 const canvas = document.getElementById('game');
 const g = canvas.getContext('2d');
@@ -61,6 +64,11 @@ let secondWindUsed = false, secondWindShield = 0;
 let killsTotal = 0;
 let adBusy = false;
 let paused = false;
+let pauseReasons = new Set();
+let loopStarts = 0, renderedFrames = 0, fixedSteps = 0;
+let hazard = null;
+const reducedMotionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false, addEventListener() {} };
+let reducedMotion = !!reducedMotionQuery.matches;
 let tPulse = 0;
 let spawnQueue = [];
 let spawnTimer = 0;
@@ -107,7 +115,37 @@ function reset() {
   spawnQueue = []; spawnTimer = 0;
   runCores = 0; fever = 0; feverUsedAtCombo = 0; vampireKills = 0;
   hintT = 0; coresDoubled = false; newBestWave = false;
+  hazard = null;
 }
+
+function pushBounded(list, item, cap) {
+  if (list.length >= cap) list.splice(0, list.length - cap + 1);
+  list.push(item);
+  return item;
+}
+
+function addParticle(item) { return pushBounded(particles, item, CAPS.particles); }
+function addFlash(item) { return pushBounded(flashes, item, CAPS.flashes); }
+function addBeam(item) { return pushBounded(beams, item, CAPS.beams); }
+function addFloatBounded(item) { return pushBounded(floats, item, CAPS.floats); }
+
+function setPaused(reason, shouldPause) {
+  if (shouldPause) pauseReasons.add(reason); else pauseReasons.delete(reason);
+  const next = pauseReasons.size > 0;
+  if (paused === next) return;
+  paused = next;
+  if (paused) {
+    for (const key in KEYS) KEYS[key] = false;
+    joy.active = false; rightTouch.active = false;
+    audio.pauseAudio();
+    if (state === 'playing') gameplayStop();
+  } else {
+    audio.resumeAudio();
+    if (state === 'playing') gameplayStart();
+  }
+}
+
+reducedMotionQuery.addEventListener?.('change', (event) => { reducedMotion = event.matches; });
 
 // ---------- waves ----------
 function startWave(n) {
@@ -138,6 +176,13 @@ function startWave(n) {
     }
   }
   spawnQueue = q; spawnTimer = n === 1 ? 0.12 : 0.3; spawnGap = n === 1 ? 0.16 : 0.35;
+  // After the player understands the first three waves, a telegraphed floor
+  // sector creates a dash-positioning decision. It always begins as a warning
+  // and spawns are kept out of the dangerous wedge while it is active.
+  if (n >= 4) {
+    const a = Math.random() * Math.PI * 2;
+    hazard = { angle: a, width: 0.52, warning: 1.25, active: 3.4, hitCd: 0 };
+  }
   // heart pickup every 3 waves if hurt
   if (n > 1 && n % 3 === 0 && hero.hp < hero.hpMax) {
     const a = Math.random() * Math.PI * 2;
@@ -146,48 +191,52 @@ function startWave(n) {
 }
 
 function spawnEnemy(type, px, py) {
-  const a = Math.random() * Math.PI * 2;
+  let a = Math.random() * Math.PI * 2;
+  if (hazard && hazard.warning <= 0 && hazard.active > 0 && px == null) {
+    // Never teleport a robot into the currently electrified sector.
+    for (let tries = 0; tries < 8 && angDiff(a, hazard.angle) < hazard.width + 0.35; tries++) a = Math.random() * Math.PI * 2;
+  }
   const x = px != null ? px : CX + Math.cos(a) * (ARENA_R - 14);
   const y = py != null ? py : CY + Math.sin(a) * (ARENA_R - 14);
   const wv = wave;
   // teleport column of light at the spawn point
   const beamHue = { melee: 185, shooter: 300, kamikaze: 20, shield: 130, splitter: 50, mini: 50, boss: 265, twin: 335 }[type] || 185;
-  beams.push({ x, y, t: 0, life: 0.55, hue: beamHue });
-  flashes.push({ x, y, t: 0, life: 0.4, r: 40, hue: beamHue });
+  addBeam({ x, y, t: 0, life: 0.55, hue: beamHue });
+  addFlash({ x, y, t: 0, life: 0.4, r: 40, hue: beamHue });
   for (let i = 0; i < 8; i++) {
     const pa = Math.random() * Math.PI * 2;
-    particles.push({ x, y, vx: Math.cos(pa) * 90, vy: Math.sin(pa) * 90 - 40, life: 0.4, t: 0, hue: beamHue, spring: false, r: 2 });
+    addParticle({ x, y, vx: Math.cos(pa) * 90, vy: Math.sin(pa) * 90 - 40, life: 0.4, t: 0, hue: beamHue, spring: false, r: 2 });
   }
   if (type === 'melee') {
-    enemies.push({ type, x, y, hp: 1, r: 14, speed: 70 + wv * 4, t: 0, spawn: 0.6, hue: 185 });
+    pushBounded(enemies, { type, x, y, hp: 1, r: 14, speed: 70 + wv * 4, t: 0, spawn: 0.6, hue: 185, windup: 0, attackCd: 0.35 }, CAPS.enemies);
   } else if (type === 'shooter') {
-    enemies.push({ type, x, y, hp: 1, r: 13, speed: 55 + wv * 2, t: Math.random() * 2, spawn: 0.6, fireCd: 1.6, hue: 300 });
+    pushBounded(enemies, { type, x, y, hp: 1, r: 13, speed: 55 + wv * 2, t: Math.random() * 2, spawn: 0.6, fireCd: 1.6, charge: 0, hue: 300 }, CAPS.enemies);
   } else if (type === 'kamikaze') {
-    enemies.push({ type, x, y, hp: 1, r: 11, speed: 150 + wv * 5, t: 0, spawn: 0.6, hue: 20 });
+    pushBounded(enemies, { type, x, y, hp: 1, r: 11, speed: 150 + wv * 5, t: 0, spawn: 0.6, fuse: 0, hue: 20 }, CAPS.enemies);
   } else if (type === 'shield') {
     // shield droid: front is invulnerable — hit it from behind (faces the hero)
-    enemies.push({ type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: 0, hue: 130 });
+    pushBounded(enemies, { type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: 0, hue: 130 }, CAPS.enemies);
   } else if (type === 'splitter') {
     // splits into two minis on death
-    enemies.push({ type, x, y, hp: 2, r: 17, speed: 60 + wv * 3, t: 0, spawn: 0.7, hue: 50 });
+    pushBounded(enemies, { type, x, y, hp: 2, r: 17, speed: 60 + wv * 3, t: 0, spawn: 0.7, hue: 50, pulse: 0 }, CAPS.enemies);
   } else if (type === 'mini') {
-    enemies.push({ type: 'melee', mini: true, x, y, hp: 1, r: 8, speed: 130 + wv * 4, t: 0, spawn: 0.25, hue: 50 });
+    pushBounded(enemies, { type: 'melee', mini: true, x, y, hp: 1, r: 8, speed: 130 + wv * 4, t: 0, spawn: 0.25, hue: 50, windup: 0, attackCd: 0.35 }, CAPS.enemies);
   } else if (type === 'boss') {
     const bhp = 16 + Math.floor(wv / 5) * 8;
-    enemies.push({ type, x, y, hp: bhp, maxHp: bhp, r: 34, speed: 45, t: 0, spawn: 1, fireCd: 2.5, chargeCd: 4, charging: 0, cvx: 0, cvy: 0, hue: 265 });
+    pushBounded(enemies, { type, x, y, hp: bhp, maxHp: bhp, r: 34, speed: 45, t: 0, spawn: 1, fireCd: 2.5, chargeCd: 4, phaseWarn: 0, charging: 0, cvx: 0, cvy: 0, hue: 265 }, CAPS.enemies);
   } else if (type === 'twin') {
     // twin core boss (every 10 waves): orbits arena, spiral fire
     const bhp = 12 + Math.floor(wv / 10) * 8;
-    enemies.push({ type, x, y, hp: bhp, maxHp: bhp, r: 26, speed: 60, t: Math.random() * 6, spawn: 1, fireCd: 2, orbitA: a, orbitDir: Math.random() < 0.5 ? 1 : -1, hue: 335 });
+    pushBounded(enemies, { type, x, y, hp: bhp, maxHp: bhp, r: 26, speed: 60, t: Math.random() * 6, spawn: 1, fireCd: 2, orbitA: a, orbitDir: Math.random() < 0.5 ? 1 : -1, hue: 335 }, CAPS.enemies);
   }
 }
 
 // ---------- particles ----------
 function burst(x, y, hue, n, spd) {
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < (reducedMotion ? Math.ceil(n * 0.35) : n); i++) {
     const a = Math.random() * Math.PI * 2;
     const v = (0.3 + Math.random()) * spd;
-    particles.push({
+    addParticle({
       x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
       life: 0.5 + Math.random() * 0.5, t: 0, hue,
       spring: Math.random() < 0.3, r: 2 + Math.random() * 3,
@@ -196,7 +245,7 @@ function burst(x, y, hue, n, spd) {
 }
 
 function addFloat(x, y, text, hue) {
-  floats.push({ x, y, text, hue, t: 0 });
+  addFloatBounded({ x, y, text, hue, t: 0 });
 }
 
 // ---------- combat ----------
@@ -212,7 +261,7 @@ function doSlash() {
   hero.slashCd = fever > 0 ? 0.2 : 0.28;
   hero.slashTimer = 0.14;
   hero.slashAngle = hero.aim;
-  hero.slashArcs.push({ a: hero.aim, t: 0 });
+  pushBounded(hero.slashArcs, { a: hero.aim, t: 0 }, CAPS.slashArcs);
   audio.slashSound(combo);
   let kills = 0;
   const RANGE = stats.range, HALF = Math.PI * (60 / 180); // 120° arc
@@ -250,7 +299,11 @@ function doSlash() {
       audio.deflectSound();
       addFloat(b.x, b.y, 'DEFLECT!', 130);
       burst(b.x, b.y, 130, 5, 100);
-      flashes.push({ x: b.x, y: b.y, r: 34, hue: 130, t: 0, life: 0.22 });
+      addFlash({ x: b.x, y: b.y, r: 34, hue: 130, t: 0, life: 0.22 });
+      if (comboTimer > 0) {
+        comboTimer = Math.min(3, comboTimer + 0.8);
+        addFloat(hero.x, hero.y - 72, 'CHAIN +0.8s', 130);
+      }
     }
   }
   if (kills >= 3) {
@@ -287,7 +340,7 @@ function killEnemy(e) {
   // sliced-in-half robot debris (PEGI-safe: robots + sparks)
   const cutA = hero ? Math.atan2(e.y - hero.y, e.x - hero.x) + Math.PI / 2 : Math.random() * Math.PI * 2;
   for (const side of [-1, 1]) {
-    debris.push({
+    pushBounded(debris, {
       x: e.x, y: e.y, r: e.r, hue: e.hue, type: e.type, side,
       cutA,
       vx: Math.cos(cutA + side * Math.PI / 2) * (70 + Math.random() * 60),
@@ -296,12 +349,12 @@ function killEnemy(e) {
       t: 0, life: 0.7 + Math.random() * 0.3,
     });
   }
-  flashes.push({ x: e.x, y: e.y, r: isBoss ? 90 : 46, hue: e.hue, t: 0, life: isBoss ? 0.4 : 0.25 });
+  addFlash({ x: e.x, y: e.y, r: isBoss ? 90 : 46, hue: e.hue, t: 0, life: isBoss ? 0.4 : 0.25 });
   // drop persistent cores currency
   const nCores = isBoss ? 5 : e.type === 'shield' || e.type === 'splitter' ? 2 : e.mini ? 0 : Math.random() < 0.55 ? 1 : 0;
   for (let i = 0; i < nCores; i++) {
     const a = Math.random() * Math.PI * 2;
-    cores.push({ x: e.x + Math.cos(a) * 8, y: e.y + Math.sin(a) * 8, vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, t: 0 });
+    pushBounded(cores, { x: e.x + Math.cos(a) * 8, y: e.y + Math.sin(a) * 8, vx: Math.cos(a) * 60, vy: Math.sin(a) * 60, t: 0 }, CAPS.cores);
   }
   // splitter splits into two fast minis
   if (e.type === 'splitter') {
@@ -352,7 +405,8 @@ function damageHero() {
   hero.iframes = 1;
   hurtFlash = 0.4;
   shake = 16;
-  combo = 0; multiplier = 1; comboTimer = 0;
+  if (combo > 0) addFloat(hero.x, hero.y - 58, 'CHAIN BROKEN!', 0);
+  combo = 0; multiplier = 1; comboTimer = 0; fever = 0;
   audio.hurtSound();
   burst(hero.x, hero.y, 0, 20, 180);
   if (hero.hp <= 0) gameOver();
@@ -363,14 +417,14 @@ function gameOver() {
   deathT = 0;
   // spectacular death explosion: multi-ring blast + debris + slowmo shake
   shake = 26;
-  flashes.push({ x: hero.x, y: hero.y, t: 0, life: 0.7, r: 160, hue: 0 });
-  flashes.push({ x: hero.x, y: hero.y, t: 0, life: 0.5, r: 90, hue: 160 });
+  addFlash({ x: hero.x, y: hero.y, t: 0, life: 0.7, r: 160, hue: 0 });
+  addFlash({ x: hero.x, y: hero.y, t: 0, life: 0.5, r: 90, hue: 160 });
   burst(hero.x, hero.y, 160, 46, 320);
   burst(hero.x, hero.y, 0, 30, 220);
   burst(hero.x, hero.y, 45, 24, 260);
   for (let i = 0; i < 6; i++) {
     const a = Math.random() * Math.PI * 2;
-    debris.push({ x: hero.x, y: hero.y, vx: Math.cos(a) * (120 + Math.random() * 160), vy: Math.sin(a) * (120 + Math.random() * 160) - 60, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 12, r: 6 + Math.random() * 6, side: Math.random() < 0.5 ? 1 : -1, hue: 160, t: 0, life: 1.2 });
+    pushBounded(debris, { x: hero.x, y: hero.y, vx: Math.cos(a) * (120 + Math.random() * 160), vy: Math.sin(a) * (120 + Math.random() * 160) - 60, rot: Math.random() * 6, vr: (Math.random() - 0.5) * 12, r: 6 + Math.random() * 6, side: Math.random() < 0.5 ? 1 : -1, hue: 160, t: 0, life: 1.2 }, CAPS.debris);
   }
   gameplayStop();
   audio.gameOverSound();
@@ -392,17 +446,8 @@ function startGame() {
 }
 
 async function playAgain() {
-  if (adBusy) return;
-  // INSTANT retry — never make the player wait after death (quality-first).
-  // Midgame ad only if one hasn't run for 3+ minutes.
-  if (performance.now() - lastAdAt < 180000) { startGame(); return; }
-  adBusy = true;
-  await requestAd('midgame', {
-    onStart: () => { audio.setMuted(true); },
-    onFinish: () => { audio.setMuted(getMuteSetting()); },
-  });
-  lastAdAt = performance.now();
-  adBusy = false;
+  // A retry is always local and immediate. Rewarded choices are optional; no
+  // midgame ad is allowed to turn this natural break into a mandatory wait.
   startGame();
 }
 
@@ -410,8 +455,8 @@ async function doubleCores() {
   if (adBusy || coresDoubled || runCores <= 0) return;
   adBusy = true;
   const ok = await requestAd('rewarded', {
-    onStart: () => { audio.setMuted(true); },
-    onFinish: () => { audio.setMuted(getMuteSetting()); },
+    onStart: () => { audio.setMuted(true); setPaused('ad', true); },
+    onFinish: () => { audio.setMuted(getMuteSetting()); setPaused('ad', false); },
   });
   adBusy = false;
   if (ok) {
@@ -426,8 +471,8 @@ async function secondWind() {
   if (adBusy || secondWindUsed) return;
   adBusy = true;
   const ok = await requestAd('rewarded', {
-    onStart: () => { audio.setMuted(true); },
-    onFinish: () => { audio.setMuted(getMuteSetting()); },
+    onStart: () => { audio.setMuted(true); setPaused('ad', true); },
+    onFinish: () => { audio.setMuted(getMuteSetting()); setPaused('ad', false); },
   });
   adBusy = false;
   if (ok) {
@@ -472,13 +517,13 @@ function update(dt) {
   if (hero.dashTimer > 0) {
     hero.dashTimer -= sdt;
     hero.x += hero.dvx * sdt; hero.y += hero.dvy * sdt;
-    hero.trail.push({ x: hero.x, y: hero.y, t: 0 });
-    hero.ghosts.push({ x: hero.x, y: hero.y, aim: hero.aim, t: 0 });
+    pushBounded(hero.trail, { x: hero.x, y: hero.y, t: 0 }, CAPS.trail);
+    pushBounded(hero.ghosts, { x: hero.x, y: hero.y, aim: hero.aim, t: 0 }, CAPS.ghosts);
     hero.cloak = Math.min(1, hero.cloak + dt * 12);
   } else {
     hero.x += mx * heroSpeed * sdt;
     hero.y += my * heroSpeed * sdt;
-    if (Math.abs(mx) + Math.abs(my) > 0.1 && Math.random() < 0.3) hero.trail.push({ x: hero.x, y: hero.y, t: 0.25 });
+    if (Math.abs(mx) + Math.abs(my) > 0.1 && Math.random() < 0.3) pushBounded(hero.trail, { x: hero.x, y: hero.y, t: 0.25 }, CAPS.trail);
     hero.cloak = Math.max(0, hero.cloak - dt * 3);
     hero.breathe += dt;
   }
@@ -501,6 +546,24 @@ function update(dt) {
     if (comboTimer <= 0) { combo = 0; multiplier = 1; }
   }
 
+  // Sector hazard: it announces itself first, then damages at most once per
+  // second while active. The edge is deliberately inside the arena so a dash
+  // can always escape it.
+  if (hazard) {
+    if (hazard.warning > 0) hazard.warning -= sdt;
+    else {
+      hazard.active -= sdt;
+      hazard.hitCd -= sdt;
+      const ha = Math.atan2(hero.y - CY, hero.x - CX);
+      const hr = Math.hypot(hero.x - CX, hero.y - CY);
+      if (hazard.active > 0 && hr > 92 && angDiff(ha, hazard.angle) < hazard.width && hazard.hitCd <= 0) {
+        hazard.hitCd = 0.9;
+        damageHero();
+      }
+      if (hazard.active <= 0) hazard = null;
+    }
+  }
+
   // spawn queue
   if (spawnQueue.length > 0) {
     spawnTimer -= sdt;
@@ -516,7 +579,13 @@ function update(dt) {
     const d = Math.hypot(dx, dy) || 1;
     if (e.type === 'melee') {
       e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
-      if (d < e.r + 14) damageHero();
+      e.attackCd -= sdt;
+      if (d < e.r + 16 && e.attackCd <= 0 && e.windup <= 0) e.windup = 0.42;
+      if (e.windup > 0) {
+        e.windup -= sdt;
+        if (e.windup <= 0 && d < e.r + 22) damageHero();
+        if (e.windup <= 0) e.attackCd = 0.8;
+      }
     } else if (e.type === 'shield') {
       e.face = Math.atan2(dy, dx); // always faces the hero
       e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
@@ -526,19 +595,27 @@ function update(dt) {
       const dir = d > want ? 1 : -0.6;
       e.x += dx / d * e.speed * dir * sdt; e.y += dy / d * e.speed * dir * sdt;
       e.fireCd -= sdt;
-      if (e.fireCd <= 0) {
-        e.fireCd = 2.2 - Math.min(wave * 0.05, 0.8);
-        bullets.push({ x: e.x, y: e.y, vx: dx / d * 150, vy: dy / d * 150, r: 6, hue: 320, friendly: false });
+      if (e.charge > 0) {
+        e.charge -= sdt;
+        if (e.charge <= 0) {
+          e.fireCd = 2.2 - Math.min(wave * 0.05, 0.8);
+          pushBounded(bullets, { x: e.x, y: e.y, vx: dx / d * 150, vy: dy / d * 150, r: 6, hue: 320, friendly: false }, CAPS.bullets);
+        }
+      } else if (e.fireCd <= 0.7) {
+        e.charge = 0.7;
+        addFloat(e.x, e.y - 24, 'LOCKING', e.hue);
       }
       if (d < e.r + 14) damageHero();
     } else if (e.type === 'kamikaze') {
       e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
-      if (d < e.r + 16) {
+      if (d < 150 && !e.fuseStarted) { e.fuse = 0.85; e.fuseStarted = true; addFloat(e.x, e.y - 22, 'DANGER', 0); }
+      if (e.fuseStarted) e.fuse -= sdt;
+      if (e.fuseStarted && e.fuse <= 0) {
         e.dead = true;
         burst(e.x, e.y, 20, 22, 200);
         shake = 12;
         audio.hurtSound();
-        damageHero();
+        if (d < e.r + 28) damageHero();
       }
     } else if (e.type === 'boss') {
       e.chargeCd -= sdt; e.fireCd -= sdt;
@@ -547,8 +624,11 @@ function update(dt) {
         e.x += e.cvx * sdt; e.y += e.cvy * sdt;
       } else {
         e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
-        if (e.chargeCd <= 0) {
-          e.chargeCd = 4.5; e.charging = 0.6;
+        if (e.phaseWarn > 0) {
+          e.phaseWarn -= sdt;
+          if (e.phaseWarn <= 0) { e.charging = 0.6; e.cvx = dx / d * 320; e.cvy = dy / d * 320; }
+        } else if (e.chargeCd <= 0) {
+          e.chargeCd = 4.5; e.phaseWarn = 0.75;
           e.cvx = dx / d * 320; e.cvy = dy / d * 320;
           audio.dashSound();
         }
@@ -556,7 +636,7 @@ function update(dt) {
           e.fireCd = 2.8;
           for (let i = 0; i < 8; i++) {
             const a = (i / 8) * Math.PI * 2 + e.t;
-            bullets.push({ x: e.x, y: e.y, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120, r: 6, hue: 280, friendly: false });
+            pushBounded(bullets, { x: e.x, y: e.y, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120, r: 6, hue: 280, friendly: false }, CAPS.bullets);
           }
         }
       }
@@ -567,7 +647,9 @@ function update(dt) {
       // lumbering zigzag approach
       const wob = Math.sin(e.t * 4) * 0.6;
       const a2 = Math.atan2(dy, dx) + wob;
-      e.x += Math.cos(a2) * e.speed * sdt; e.y += Math.sin(a2) * e.speed * sdt;
+      e.pulse = (e.pulse + sdt) % 2.2;
+      const pulseSpeed = e.pulse > 1.7 ? 1.35 : 1;
+      e.x += Math.cos(a2) * e.speed * pulseSpeed * sdt; e.y += Math.sin(a2) * e.speed * pulseSpeed * sdt;
       if (d < e.r + 14) damageHero();
     } else if (e.type === 'twin') {
       // orbits the arena edge, spiral fire toward hero
@@ -582,7 +664,7 @@ function update(dt) {
         const base = Math.atan2(hero.y - e.y, hero.x - e.x);
         for (let i = -1; i <= 1; i++) {
           const a3 = base + i * 0.35;
-          bullets.push({ x: e.x, y: e.y, vx: Math.cos(a3) * 140, vy: Math.sin(a3) * 140, r: 6, hue: 335, friendly: false });
+          pushBounded(bullets, { x: e.x, y: e.y, vx: Math.cos(a3) * 140, vy: Math.sin(a3) * 140, r: 6, hue: 335, friendly: false }, CAPS.bullets);
         }
       }
       if (d < e.r + 14) damageHero();
@@ -675,7 +757,7 @@ function updateFx(dt) {
     d.vx *= 0.94; d.vy = d.vy * 0.94 + 140 * dt; // light gravity
     d.rot += d.vr * dt;
     // spark trail off the cut edge
-    if (Math.random() < 0.35) particles.push({ x: d.x, y: d.y, vx: (Math.random() - 0.5) * 60, vy: -Math.random() * 40, life: 0.25, t: 0, hue: 45, spring: false, r: 1.5 });
+    if (Math.random() < 0.35) addParticle({ x: d.x, y: d.y, vx: (Math.random() - 0.5) * 60, vy: -Math.random() * 40, life: 0.25, t: 0, hue: 45, spring: false, r: 1.5 });
   }
   debris = debris.filter(d => d.t < d.life);
   for (const fl of flashes) fl.t += dt;
@@ -829,6 +911,31 @@ function drawFloorDynamic() {
     for (const e of enemies) if (e.spawn <= 0) pool(e.x, e.y + e.r * 0.6, e.r * 1.8, e.hue, 0.08);
     for (const b of bullets) pool(b.x, b.y + 4, 14, b.hue, 0.10);
     g.globalCompositeOperation = 'source-over';
+  }
+  g.restore();
+}
+
+function drawHazard() {
+  if (!hazard) return;
+  const active = hazard.warning <= 0;
+  const pulse = 0.65 + Math.sin(tPulse * (active ? 18 : 7)) * 0.25;
+  g.save();
+  g.beginPath();
+  g.moveTo(CX, CY);
+  g.arc(CX, CY, ARENA_R - 8, hazard.angle - hazard.width, hazard.angle + hazard.width);
+  g.closePath();
+  g.fillStyle = active ? 'rgba(80,210,255,' + (0.13 + pulse * 0.12) + ')' : 'rgba(255,185,50,0.16)';
+  g.fill();
+  g.strokeStyle = active ? 'rgba(120,240,255,' + pulse + ')' : 'rgba(255,205,70,' + pulse + ')';
+  g.lineWidth = active ? 4 : 3;
+  g.shadowColor = active ? '#4dffd2' : '#ffd24d'; g.shadowBlur = active ? 18 : 12;
+  g.beginPath();
+  g.arc(CX, CY, ARENA_R - 10, hazard.angle - hazard.width, hazard.angle + hazard.width);
+  g.stroke();
+  if (!active) {
+    g.fillStyle = '#ffe14d'; g.font = '800 15px "Segoe UI", sans-serif'; g.textAlign = 'center';
+    const tx = CX + Math.cos(hazard.angle) * 140, ty = CY + Math.sin(hazard.angle) * 140;
+    g.fillText('FLOOR CHARGING', tx, ty);
   }
   g.restore();
 }
@@ -1135,12 +1242,13 @@ function render() {
   g.save();
   g.translate(curCam.ox, curCam.oy);
   g.scale(curCam.s, curCam.s);
-  if (shake > 0) g.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  if (shake > 0 && !reducedMotion) g.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
 
   // pre-rendered tech floor + animated circuit energy + neon reflections
   if (!floorCanvas) buildFloor();
   g.drawImage(floorCanvas, 0, 0);
   drawFloorDynamic();
+  drawHazard();
 
   // pulsing arena ring (fever = golden overdrive)
   const pulse = 1 + Math.sin(tPulse * 2.2) * 0.008;
@@ -1351,6 +1459,14 @@ function render() {
       else if (hintT < 8) g.fillText(isTouch ? 'Swipe right side: dash through danger' : 'SPACE: dash through danger', CX, H - 70);
     }
     // combo
+    // Fever meter is always present: kills fill it, its underline drains, and
+    // a green deflect extends the same timer instead of being hidden scoring.
+    g.textAlign = 'center';
+    const feverFill = Math.min(1, (combo % 10) / 10 || (combo >= 10 ? 1 : 0));
+    g.fillStyle = 'rgba(255,225,77,0.22)'; g.fillRect(CX - 60, 68, 120, 5);
+    g.fillStyle = fever > 0 ? '#ffe14d' : '#73f7d6'; g.fillRect(CX - 60, 68, 120 * feverFill, 5);
+    g.fillStyle = 'rgba(220,245,255,0.72)'; g.font = '700 12px "Segoe UI", sans-serif';
+    g.fillText(fever > 0 ? 'FEVER ACTIVE' : 'FEVER ' + Math.min(combo, 10) + '/10', CX, 53);
     if (combo >= 2) {
       g.textAlign = 'center';
       const cs = 1 + Math.min(combo, 10) * 0.03;
@@ -1361,7 +1477,7 @@ function render() {
       g.restore();
       // combo timer bar
       g.fillStyle = 'rgba(255,225,77,0.8)';
-      g.fillRect(CX - 60, 98, 120 * (comboTimer / 3), 4);
+      g.fillRect(CX - 60, 104, 120 * (comboTimer / 3), 4);
     }
     // dash cooldown
     g.textAlign = 'left';
@@ -1386,7 +1502,7 @@ function render() {
 
   // hurt flash
   if (hurtFlash > 0) {
-    g.fillStyle = 'rgba(255,40,80,' + (hurtFlash * 0.4) + ')';
+    g.fillStyle = 'rgba(255,40,80,' + (hurtFlash * (reducedMotion ? 0.14 : 0.4)) + ')';
     fullRect();
   }
   // slowmo tint
@@ -1401,7 +1517,7 @@ function render() {
     g.globalCompositeOperation = 'lighter';
     const og = g.createRadialGradient(CX, CY, ARENA_R * 0.5, CX, CY, W * 0.7);
     og.addColorStop(0, 'rgba(255,220,80,0)');
-    og.addColorStop(1, 'rgba(255,180,40,' + (0.10 * fa + Math.sin(tPulse * 8) * 0.03) + ')');
+    og.addColorStop(1, 'rgba(255,180,40,' + ((reducedMotion ? 0.03 : 0.10) * fa + (reducedMotion ? 0 : Math.sin(tPulse * 8) * 0.03)) + ')');
     g.fillStyle = og; fullRect();
     // scanline energy bars racing along top & bottom edges
     g.fillStyle = 'rgba(255,225,77,' + 0.5 * fa + ')';
@@ -1557,6 +1673,32 @@ function drawEnemy(e) {
   g.lineWidth = 2.5;
   const walk = Math.sin(e.t * 9); // shared stride cycle
   const eyeCol = flash ? '#ffffff' : 'hsl(' + e.hue + ',100%,72%)';
+  // Every threat uses a deliberately distinct, high-contrast telegraph.
+  if (e.windup > 0) {
+    const a = 1 - e.windup / 0.42;
+    g.strokeStyle = 'hsla(20,100%,72%,' + (0.45 + a * 0.5) + ')'; g.lineWidth = 3.5; g.shadowColor = '#ff704d'; g.shadowBlur = 14;
+    g.beginPath(); g.arc(0, 0, e.r + 10 + a * 8, -Math.PI * 0.6, Math.PI * 0.6); g.stroke();
+  }
+  if (e.type === 'shooter' && e.charge > 0) {
+    const a = Math.atan2(hero.y - e.y, hero.x - e.x), p = 1 - e.charge / 0.7;
+    g.save(); g.rotate(a); g.strokeStyle = 'hsla(300,100%,75%,' + (0.4 + p * 0.6) + ')'; g.lineWidth = 2 + p * 3; g.shadowColor = '#ff4dff'; g.shadowBlur = 16;
+    g.beginPath(); g.moveTo(e.r, 0); g.lineTo(230, 0); g.stroke(); g.restore();
+  }
+  if (e.type === 'kamikaze' && e.fuseStarted) {
+    const p = Math.max(0, e.fuse / 0.85);
+    g.strokeStyle = 'hsla(0,100%,68%,' + (0.45 + (1 - p) * 0.5) + ')'; g.lineWidth = 3; g.shadowColor = '#ff3b3b'; g.shadowBlur = 14;
+    g.beginPath(); g.arc(0, 0, e.r + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p); g.stroke();
+  }
+  if (e.type === 'splitter' && e.pulse > 1.7) {
+    const p = (e.pulse - 1.7) / 0.5;
+    g.strokeStyle = 'hsla(55,100%,72%,' + (1 - p) + ')'; g.lineWidth = 2.5; g.shadowColor = '#ffe14d'; g.shadowBlur = 12;
+    g.beginPath(); g.arc(0, 0, e.r + 7 + p * 14, 0, Math.PI * 2); g.stroke();
+  }
+  if (e.type === 'boss' && e.phaseWarn > 0) {
+    const p = 1 - e.phaseWarn / 0.75;
+    g.strokeStyle = 'hsla(0,100%,72%,' + (0.45 + p * 0.5) + ')'; g.lineWidth = 4; g.shadowColor = '#ff4055'; g.shadowBlur = 20;
+    g.beginPath(); g.arc(0, 0, e.r + 15 + p * 12, 0, Math.PI * 2); g.stroke();
+  }
   if (e.type === 'melee') {
     // humanoid saw-bot: faces the hero, stomping legs, spinning saw arm
     const face = Math.atan2(hero.y - e.y, hero.x - e.x);
@@ -2158,6 +2300,12 @@ canvas.addEventListener('touchend', (e) => {
   }
 }, { passive: false });
 
+// One listener each: the simulation and audio stop while the game cannot be
+// played, then resume exactly once when the last blocking reason clears.
+document.addEventListener('visibilitychange', () => setPaused('visibility', document.hidden));
+window.addEventListener('blur', () => setPaused('blur', true));
+window.addEventListener('focus', () => setPaused('blur', false));
+
 // ---------- debug hook ----------
 if (new URLSearchParams(location.search).get('debug') === '1') {
   window.__astro = {
@@ -2167,6 +2315,9 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
     addRunCores: (n) => { runCores += n; },
     setCombo: (n) => { combo = n; comboTimer = 3; multiplier = 1 + Math.floor(n / 3); },
     spawn: (type) => spawnEnemy(type),
+    spawnAt: (type, x, y) => spawnEnemy(type, x, y),
+    clearArena: () => { enemies = []; bullets = []; spawnQueue = ['__test_hold']; spawnTimer = 999; },
+    testStart: () => { reset(); state = 'playing'; introT = 0; spawnQueue = ['__test_hold']; spawnTimer = 999; },
     setWave: (n) => { enemies = []; bullets = []; spawnQueue = []; startWave(n); },
     openShop: () => { if (state === 'menu' || state === 'gameover') { state = 'shop'; shopTab = 0; } },
     getMeta: () => JSON.parse(JSON.stringify(meta)),
@@ -2179,24 +2330,75 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
       cores: meta.cores, bestWave: meta.bestWave, streak: meta.streakCount,
       katana: meta.katana, perk: meta.perk, plays: meta.plays,
       shopTab,
-      enemies: enemies ? enemies.map(e => ({ dx: e.x - hero.x, dy: e.y - hero.y, type: e.type, hp: e.hp })) : [],
+      hazard: hazard ? { angle: hazard.angle, width: hazard.width, warning: hazard.warning, active: hazard.active } : null,
+      enemies: enemies ? enemies.map(e => ({ dx: e.x - hero.x, dy: e.y - hero.y, type: e.type, hp: e.hp, windup: e.windup || 0, charge: e.charge || 0, fuse: e.fuse || 0, fuseStarted: !!e.fuseStarted, pulse: e.pulse || 0, phaseWarn: e.phaseWarn || 0 })) : [],
       coreDrops: cores ? cores.length : 0,
       bullets: bullets ? bullets.length : 0,
     }),
     startGame: () => { if (state === 'menu') startGame(); },
     getCam: () => ({ scale: cam.scale, ox: cam.ox, oy: cam.oy, vw: VW, vh: VH }),
     skipIntro: () => { introT = 0; },
+    getDebugCounts: () => ({
+      enemies: enemies.length, bullets: bullets.length, particles: particles.length,
+      debris: debris.length, flashes: flashes.length, beams: beams.length,
+      floats: floats.length, cores: cores.length, trail: hero ? hero.trail.length : 0,
+      ghosts: hero ? hero.ghosts.length : 0, listeners: 13, loopStarts, renderedFrames, fixedSteps,
+    }),
+    setPausedForTest: (reason, value) => setPaused(reason, value),
+    setInvincible: (seconds = 30) => { if (hero) hero.iframes = seconds; },
+    runDeterminism: (hz, seconds = 12) => {
+      // Uses the same fixed-step accumulator contract as RAF. It intentionally
+      // avoids game RNG so the test catches any accidental frame-count logic.
+      let acc = 0, position = 0, spawnClock = 0, spawns = 0, difficulty = 1;
+      const frames = Math.round(hz * seconds);
+      for (let f = 0; f < frames; f++) {
+        acc += 1 / hz;
+        while (acc + 1e-9 >= FIXED_DT) {
+          position += 180 * FIXED_DT * difficulty;
+          spawnClock += FIXED_DT;
+          if (spawnClock >= 0.8) { spawnClock -= 0.8; spawns++; difficulty = 1 + Math.floor(spawns / 5) * 0.1; }
+          acc -= FIXED_DT;
+        }
+      }
+      return { position: +position.toFixed(6), spawns, difficulty: +difficulty.toFixed(6) };
+    },
+    runSoak: (seconds = 120) => {
+      if (state !== 'playing') startGame();
+      introT = 0; spawnQueue = []; enemies = []; bullets = [];
+      const roster = ['melee', 'shooter', 'kamikaze', 'shield', 'splitter', 'boss'];
+      const steps = Math.round(seconds / FIXED_DT);
+      for (let i = 0; i < steps; i++) {
+        if (i % 15 === 0) {
+          spawnEnemy(roster[(i / 15) % roster.length], CX + 140, CY);
+          const e = enemies[enemies.length - 1];
+          if (e) { e.spawn = 0; killEnemy(e); }
+        }
+        enemies = enemies.filter(e => !e.dead); spawnQueue = [];
+        update(FIXED_DT);
+        if (state !== 'playing') startGame();
+      }
+      return window.__astro.getDebugCounts();
+    },
   };
 }
 
 // ---------- boot ----------
 let lastT = performance.now();
+let accumulator = 0;
 function loop(now) {
-  const dt = Math.min(0.05, (now - lastT) / 1000);
+  const dt = Math.min(0.1, (now - lastT) / 1000);
   lastT = now;
   if (!paused) {
-    update(dt);
+    accumulator = Math.min(accumulator + dt, FIXED_DT * MAX_STEPS_PER_FRAME);
+    let steps = 0;
+    while (accumulator + 1e-9 >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
+      update(FIXED_DT);
+      accumulator -= FIXED_DT;
+      fixedSteps++;
+      steps++;
+    }
     render();
+    renderedFrames++;
   }
   requestAnimationFrame(loop);
 }
@@ -2212,6 +2414,7 @@ async function boot() {
   reset();
   state = 'menu';
   loadingStop();
+  loopStarts++;
   requestAnimationFrame(loop);
 }
 boot();
