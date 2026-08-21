@@ -31,6 +31,9 @@ for (const yy of [H/2 + 90, H/2 + 80, H/2 + 100]) {
 }
 let s = await getState();
 if (s.state !== 'playing') { await page.evaluate(() => window.__astro.startGame()); await page.waitForTimeout(300); }
+// Recording automation needs to demonstrate gameplay rather than a bot failure;
+// this debug-only guard is not included in normal play.
+await page.evaluate(() => window.__astro.setInvincible(25));
 
 // bot: walk to enemies, slash toward them, dash away from kamikaze
 const t0 = Date.now();
