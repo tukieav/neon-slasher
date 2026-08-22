@@ -1,168 +1,148 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><style>html,body{margin:0;padding:0;background:#000}</style></head>
+<head><meta charset="UTF-8"><style>html,body{margin:0;padding:0;background:#7c54e8;overflow:hidden}canvas{display:block}</style></head>
 <body>
 <canvas id="cover"></canvas>
 <script>
-// Cover generator for Neon Slasher — ?w=&h=&sq=1 (sq=vertical/square layout)
+// Bright illustration-style cover generator. Query: ?w=&h=&sq=1.
 const q = new URLSearchParams(location.search);
 const W = parseInt(q.get('w') || '1920', 10);
 const H = parseInt(q.get('h') || '1080', 10);
+const portrait = H > W;
 const canvas = document.getElementById('cover');
 canvas.width = W; canvas.height = H;
 const g = canvas.getContext('2d');
-const sq = q.get('sq') === '1';
-const S = Math.min(W, H) / 1080;
+const U = Math.min(W / 1920, H / 1080);
+let seed = 41;
+const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
 
-// bg
-const bg = g.createLinearGradient(0, 0, 0, H);
-bg.addColorStop(0, '#05060f'); bg.addColorStop(0.6, '#0c0620'); bg.addColorStop(1, '#140a2e');
-g.fillStyle = bg; g.fillRect(0, 0, W, H);
-
-// grid
-g.strokeStyle = 'rgba(60,80,180,0.13)'; g.lineWidth = Math.max(1, S);
-const gs = 64 * S;
-for (let x = 0; x < W; x += gs) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
-for (let y = 0; y < H; y += gs) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
-
-// arena ring behind hero
-const heroX = sq ? W * 0.5 : W * 0.68;
-const heroY = sq ? H * 0.62 : H * 0.55;
-g.save();
-g.shadowColor = '#4de8ff'; g.shadowBlur = 40 * S;
-g.strokeStyle = 'rgba(77,232,255,0.85)'; g.lineWidth = 5 * S;
-g.beginPath(); g.arc(heroX, heroY, 330 * S, 0, Math.PI * 2); g.stroke();
-g.strokeStyle = 'rgba(157,77,255,0.4)'; g.lineWidth = 3 * S;
-g.beginPath(); g.arc(heroX, heroY, 355 * S, 0, Math.PI * 2); g.stroke();
-g.restore();
-g.fillStyle = 'rgba(20,30,70,0.3)';
-g.beginPath(); g.arc(heroX, heroY, 330 * S, 0, Math.PI * 2); g.fill();
-
-function neonPoly(x, y, r, sides, hue, rot, star) {
-  g.save(); g.translate(x, y); g.rotate(rot);
-  g.shadowColor = 'hsl(' + hue + ',100%,60%)'; g.shadowBlur = 24 * S;
-  g.strokeStyle = 'hsl(' + hue + ',100%,65%)';
-  g.fillStyle = 'hsla(' + hue + ',80%,20%,0.9)';
-  g.lineWidth = 4 * S;
+function ellipse(x, y, rx, ry, fill) { g.fillStyle = fill; g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill(); }
+function poly(points, fill, stroke, width = 1) {
+  g.beginPath(); points.forEach((p, i) => i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath();
+  if (fill) { g.fillStyle = fill; g.fill(); }
+  if (stroke) { g.strokeStyle = stroke; g.lineWidth = width; g.stroke(); }
+}
+function cloud(x, y, s, color) {
+  g.fillStyle = color;
   g.beginPath();
-  const n = star ? sides * 2 : sides;
-  for (let i = 0; i < n; i++) {
-    const a = (i / n) * Math.PI * 2;
-    const rr = star && i % 2 ? r * 0.72 : r;
-    const px = Math.cos(a) * rr, py = Math.sin(a) * rr;
-    if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
-  }
-  g.closePath(); g.fill(); g.stroke();
-  g.fillStyle = 'hsl(' + hue + ',100%,70%)';
-  g.beginPath(); g.arc(0, 0, r * 0.24, 0, Math.PI * 2); g.fill();
-  g.restore();
+  g.arc(x - 68 * s, y, 42 * s, Math.PI * .78, Math.PI * 1.92);
+  g.arc(x - 20 * s, y - 28 * s, 57 * s, Math.PI, Math.PI * 2);
+  g.arc(x + 44 * s, y - 9 * s, 47 * s, Math.PI, Math.PI * 2);
+  g.arc(x + 81 * s, y + 11 * s, 34 * s, Math.PI * 1.1, Math.PI * 1.92);
+  g.closePath(); g.fill();
 }
 
-function particles(cx, cy, hue, n, spread) {
-  for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2, d = Math.random() * spread;
-    g.save();
-    g.shadowColor = 'hsl(' + hue + ',100%,60%)'; g.shadowBlur = 10 * S;
-    g.fillStyle = 'hsla(' + hue + ',100%,65%,' + (0.4 + Math.random() * 0.6) + ')';
-    g.beginPath(); g.arc(cx + Math.cos(a) * d, cy + Math.sin(a) * d, (2 + Math.random() * 4) * S, 0, Math.PI * 2);
-    g.fill(); g.restore();
-  }
+// A high-key sky / arena gradient keeps thumbnail luminance well above the gate.
+const bg = g.createLinearGradient(0, 0, W, H);
+bg.addColorStop(0, '#7454ed'); bg.addColorStop(.38, '#b65be8'); bg.addColorStop(.67, '#38cdea'); bg.addColorStop(1, '#9bf0e0');
+g.fillStyle = bg; g.fillRect(0, 0, W, H);
+const sun = g.createRadialGradient(W * .14, H * .08, 8, W * .14, H * .08, Math.max(W, H) * .58);
+sun.addColorStop(0, 'rgba(255,255,238,.96)'); sun.addColorStop(.23, 'rgba(255,212,151,.56)'); sun.addColorStop(1, 'rgba(255,212,151,0)');
+g.fillStyle = sun; g.fillRect(0, 0, W, H);
+const cyanGlow = g.createRadialGradient(W * .82, H * .54, 12, W * .82, H * .54, W * .54);
+cyanGlow.addColorStop(0, 'rgba(210,255,255,.9)'); cyanGlow.addColorStop(.35, 'rgba(85,239,255,.45)'); cyanGlow.addColorStop(1, 'rgba(85,239,255,0)');
+g.fillStyle = cyanGlow; g.fillRect(0, 0, W, H);
+
+// Soft daytime clouds and celebratory stars give the sky depth.
+cloud(W * .18, H * .24, U * (portrait ? 1.1 : 1), 'rgba(244,233,255,.40)');
+cloud(W * .73, H * .16, U * .8, 'rgba(233,252,255,.34)');
+cloud(W * .46, H * .55, U * .9, 'rgba(255,220,251,.20)');
+for (let i = 0; i < 70; i++) {
+  const x = rand() * W, y = rand() * H * .68, r = (1 + rand() * 3) * U;
+  g.fillStyle = i % 3 ? 'rgba(255,255,255,.68)' : 'rgba(255,244,153,.82)';
+  g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
 }
 
-let seed = 7;
-function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
-Math.random = rnd;
-
-// enemies around hero
-if (!sq) {
-  neonPoly(heroX - 250 * S, heroY - 160 * S, 42 * S, 6, 185, 0.4);
-  neonPoly(heroX + 230 * S, heroY - 200 * S, 38 * S, 4, 300, 0.2);
-  neonPoly(heroX + 270 * S, heroY + 120 * S, 34 * S, 3, 20, 1.2);
-  neonPoly(heroX - 120 * S, heroY + 230 * S, 55 * S, 8, 265, 0.1, true);
-  particles(heroX - 200 * S, heroY + 40 * S, 185, 26, 90 * S);
-  particles(heroX + 150 * S, heroY - 80 * S, 300, 20, 70 * S);
-} else {
-  neonPoly(heroX - 220 * S, heroY - 140 * S, 38 * S, 6, 185, 0.4);
-  neonPoly(heroX + 210 * S, heroY - 170 * S, 34 * S, 4, 300, 0.2);
-  neonPoly(heroX + 200 * S, heroY + 160 * S, 30 * S, 3, 20, 1.2);
-  particles(heroX - 160 * S, heroY + 90 * S, 185, 22, 80 * S);
-  particles(heroX + 130 * S, heroY - 60 * S, 300, 18, 60 * S);
+const hx = portrait ? W * .54 : W * .68;
+const hy = portrait ? H * .66 : H * .60;
+const heroScale = (portrait ? Math.min(W / 800, H / 1200) : Math.min(W / 1920, H / 1080)) * (portrait ? 2.05 : 2.2);
+// Arena floor and perspective light beams.
+g.save(); g.globalCompositeOperation = 'screen';
+for (let i = 0; i < 6; i++) {
+  const a = -1.9 + i * .72;
+  const bx = hx + Math.cos(a) * 500 * heroScale, by = hy + Math.sin(a) * 500 * heroScale;
+  const beam = g.createLinearGradient(hx, hy, bx, by);
+  beam.addColorStop(0, 'rgba(255,255,255,.18)'); beam.addColorStop(1, 'rgba(255,255,255,0)');
+  poly([[hx, hy], [hx + Math.cos(a - .07) * 30 * heroScale, hy + Math.sin(a - .07) * 30 * heroScale], [bx, by]], beam);
 }
-
-// slash arc
-g.save();
-g.shadowColor = '#ff4dff'; g.shadowBlur = 50 * S;
-g.strokeStyle = 'rgba(255,180,255,0.95)'; g.lineWidth = 16 * S;
-g.beginPath(); g.arc(heroX, heroY, 190 * S, -Math.PI * 0.85, -Math.PI * 0.15); g.stroke();
-g.strokeStyle = 'rgba(255,77,255,0.5)'; g.lineWidth = 30 * S;
-g.beginPath(); g.arc(heroX, heroY, 190 * S, -Math.PI * 0.8, -Math.PI * 0.2); g.stroke();
+g.restore();
+const floor = g.createLinearGradient(0, H * .62, 0, H);
+floor.addColorStop(0, 'rgba(85,90,224,.12)'); floor.addColorStop(1, 'rgba(44,63,180,.52)');
+g.fillStyle = floor; g.fillRect(0, H * .61, W, H * .39);
+g.save(); g.strokeStyle = 'rgba(238,255,255,.30)'; g.lineWidth = Math.max(1, 2 * U);
+for (let i = -8; i <= 8; i++) { g.beginPath(); g.moveTo(hx + i * 30 * heroScale, H * .61); g.lineTo(hx + i * 185 * heroScale, H); g.stroke(); }
+for (let i = 0; i < 7; i++) { const y = H * .62 + Math.pow(i / 6, 1.8) * H * .40; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
 g.restore();
 
-// hero (big hooded neon warrior — matches new in-game art)
-g.save();
-g.translate(heroX, heroY);
-g.rotate(-0.5);
-const hs = 6.5 * S;
-g.shadowColor = '#4dffd2'; g.shadowBlur = 40 * S;
-// flowing cloak
-g.fillStyle = '#0a2320'; g.strokeStyle = '#4dffd2'; g.lineWidth = 4 * S;
-g.beginPath();
-g.moveTo(-4 * hs, -7 * hs);
-g.quadraticCurveTo(-17 * hs, -13 * hs, -24 * hs, -5 * hs);
-g.quadraticCurveTo(-19 * hs, 0, -24 * hs, 6 * hs);
-g.quadraticCurveTo(-16 * hs, 12 * hs, -4 * hs, 7 * hs);
-g.closePath(); g.fill(); g.stroke();
-// torso
-g.fillStyle = '#0d2b26';
-g.beginPath();
-g.moveTo(9 * hs, 0); g.lineTo(2 * hs, -8 * hs); g.lineTo(-6 * hs, -6 * hs); g.lineTo(-8 * hs, 0); g.lineTo(-6 * hs, 6 * hs); g.lineTo(2 * hs, 8 * hs);
-g.closePath(); g.fill(); g.stroke();
-// hood
-g.fillStyle = '#123f38';
-g.beginPath();
-g.moveTo(13 * hs, 0); g.quadraticCurveTo(10 * hs, -8 * hs, 1 * hs, -7 * hs);
-g.quadraticCurveTo(-3 * hs, 0, 1 * hs, 7 * hs); g.quadraticCurveTo(10 * hs, 8 * hs, 13 * hs, 0);
-g.closePath(); g.fill(); g.stroke();
-// glowing eyes
-g.shadowColor = '#b3fff0'; g.shadowBlur = 24 * S;
-g.fillStyle = '#d9fff6';
-g.beginPath(); g.arc(8 * hs, -2.4 * hs, 1.5 * hs, 0, Math.PI * 2); g.fill();
-g.beginPath(); g.arc(8 * hs, 2.4 * hs, 1.5 * hs, 0, Math.PI * 2); g.fill();
-// katana
-g.rotate(-0.7);
-g.strokeStyle = '#8a93a8'; g.lineWidth = 5 * S; g.shadowBlur = 0;
-g.beginPath(); g.moveTo(6 * hs, 0); g.lineTo(12 * hs, 0); g.stroke();
-g.beginPath(); g.moveTo(12 * hs, -3 * hs); g.lineTo(12 * hs, 3 * hs); g.stroke();
-g.shadowColor = '#ff4dff'; g.shadowBlur = 30 * S;
-g.strokeStyle = '#ffb3ff'; g.lineWidth = 7 * S;
-g.beginPath(); g.moveTo(12 * hs, 0); g.lineTo(42 * hs, -1.5 * hs); g.stroke();
-g.strokeStyle = '#ff4dff'; g.lineWidth = 3 * S;
-g.beginPath(); g.moveTo(12 * hs, 1.5 * hs); g.lineTo(42 * hs, 0); g.stroke();
+// Impact burst behind the blade and a clearly recognizable enemy droid.
+g.save(); g.translate(hx + 145 * heroScale, hy - 95 * heroScale); g.globalCompositeOperation = 'lighter';
+for (let i = 0; i < 26; i++) {
+  const a = i * Math.PI * 2 / 26 + .15, len = (65 + (i % 5) * 28) * heroScale;
+  g.strokeStyle = i % 2 ? 'rgba(255,244,130,.95)' : 'rgba(255,122,227,.9)'; g.lineWidth = (3 + i % 4) * heroScale;
+  g.beginPath(); g.moveTo(Math.cos(a) * 12 * heroScale, Math.sin(a) * 12 * heroScale); g.lineTo(Math.cos(a) * len, Math.sin(a) * len); g.stroke();
+}
+const burst = g.createRadialGradient(0, 0, 3, 0, 0, 132 * heroScale);
+burst.addColorStop(0, 'rgba(255,255,255,1)'); burst.addColorStop(.22, 'rgba(255,228,75,.95)'); burst.addColorStop(.58, 'rgba(255,72,199,.52)'); burst.addColorStop(1, 'rgba(255,72,199,0)');
+g.fillStyle = burst; g.beginPath(); g.arc(0, 0, 132 * heroScale, 0, Math.PI * 2); g.fill(); g.restore();
+g.save(); g.translate(hx + 185 * heroScale, hy - 52 * heroScale); g.rotate(.45);
+g.shadowColor = '#ff5bcf'; g.shadowBlur = 22 * heroScale;
+ellipse(0, 0, 38 * heroScale, 32 * heroScale, '#572b94');
+poly([[-30 * heroScale, -19 * heroScale], [26 * heroScale, -25 * heroScale], [39 * heroScale, 8 * heroScale], [8 * heroScale, 29 * heroScale], [-32 * heroScale, 18 * heroScale]], '#7e3bcc', '#ffc7f2', 3 * heroScale);
+g.fillStyle = '#dffffd'; g.fillRect(-16 * heroScale, -6 * heroScale, 32 * heroScale, 8 * heroScale);
+g.fillStyle = '#4b0f7b'; g.fillRect(-2 * heroScale, -6 * heroScale, 5 * heroScale, 8 * heroScale);
 g.restore();
 
-// title — scale from WIDTH, break lines when portrait
-const base = 170;
-const fs = Math.min(base * S, W * 0.115);
-g.textBaseline = 'middle';
-if (!sq) {
-  g.textAlign = 'left';
-  g.save();
-  g.shadowColor = '#4dffd2'; g.shadowBlur = 34 * S;
-  g.fillStyle = '#ffffff'; g.font = '900 ' + fs + 'px "Segoe UI", Arial, sans-serif';
-  g.fillText('NEON', W * 0.045, H * 0.30);
-  g.shadowColor = '#ff4dff';
-  g.fillText('SLASHER', W * 0.045, H * 0.30 + fs * 0.95);
-  g.restore();
-} else {
-  g.textAlign = 'center';
-  g.save();
-  g.shadowColor = '#4dffd2'; g.shadowBlur = 30 * S;
-  g.fillStyle = '#ffffff'; g.font = '900 ' + fs + 'px "Segoe UI", Arial, sans-serif';
-  g.fillText('NEON', W * 0.5, H * 0.10);
-  g.shadowColor = '#ff4dff';
-  g.fillText('SLASHER', W * 0.5, H * 0.10 + fs * 0.95);
-  g.restore();
+// Hero: oversized hooded robot knight, glossy plates, bright visor, flowing cloak.
+g.save(); g.translate(hx, hy); g.rotate(-.22); g.scale(heroScale, heroScale);
+g.shadowColor = 'rgba(34,18,93,.7)'; g.shadowBlur = 22;
+ellipse(-18, 176, 130, 27, 'rgba(50,35,135,.42)');
+g.shadowColor = '#5affeb'; g.shadowBlur = 34;
+poly([[-82, -45], [-169, 18], [-155, 152], [-61, 181], [-9, 106], [-18, 8]], '#142b68', '#bafff4', 5);
+poly([[-62, -37], [-126, 19], [-112, 130], [-30, 147], [10, 79], [-2, 3]], '#284fa0', '#5dffff', 3);
+// legs / boots
+poly([[-40, 91], [-4, 93], [12, 178], [-44, 180]], '#18285e', '#98ffff', 4);
+poly([[17, 84], [55, 91], [86, 165], [31, 175]], '#243a82', '#98ffff', 4);
+poly([[-55, 165], [15, 165], [20, 190], [-67, 191]], '#142052', '#f3ffff', 3);
+poly([[19, 164], [96, 154], [105, 181], [24, 189]], '#142052', '#f3ffff', 3);
+// broad armored torso
+poly([[-69, -47], [19, -81], [83, -33], [67, 89], [16, 113], [-56, 75]], '#1f4b99', '#bcffff', 5);
+poly([[-45, -38], [12, -61], [50, -29], [42, 54], [4, 70], [-34, 46]], '#4d7fe0', '#2effe1', 3);
+poly([[-12, -45], [24, -48], [38, 34], [6, 53], [-18, 29]], '#17346e', '#a9fff6', 3);
+ellipse(9, 1, 15, 21, '#ffed71'); ellipse(9, 1, 7, 10, '#ffffff');
+// shoulder, arm and hand holding the slash
+poly([[45, -65], [105, -86], [143, -31], [91, 1], [52, -14]], '#2d65be', '#c6ffff', 5);
+poly([[101, -20], [157, 17], [185, -22], [128, -62]], '#234987', '#8ffff7', 4);
+ellipse(174, -24, 19, 19, '#d5ffff');
+// hood/head with friendly robot face
+poly([[-60, -67], [-38, -145], [34, -162], [83, -104], [51, -48], [-19, -41]], '#17386e', '#b6fff6', 5);
+poly([[-41, -93], [-20, -132], [30, -140], [55, -103], [30, -69], [-22, -65]], '#2e67bc', '#6dffff', 3);
+poly([[-23, -105], [30, -113], [43, -88], [18, -72], [-18, -79]], '#151d58', '#d8ffff', 3);
+g.shadowColor = '#8ffff6'; g.shadowBlur = 20;
+g.fillStyle = '#eaffff'; g.fillRect(-8, -96, 17, 7); g.fillRect(19, -99, 17, 7);
+// katana guard and long diagonal blade
+g.save(); g.translate(170, -29); g.rotate(-.23);
+g.shadowColor = '#ff4fcf'; g.shadowBlur = 28;
+g.strokeStyle = '#ffe7ff'; g.lineWidth = 16; g.beginPath(); g.moveTo(-18, 0); g.lineTo(255, -20); g.stroke();
+g.strokeStyle = '#ff55d5'; g.lineWidth = 6; g.beginPath(); g.moveTo(-12, 0); g.lineTo(255, -20); g.stroke();
+g.strokeStyle = '#ffd95c'; g.lineWidth = 8; g.beginPath(); g.moveTo(-12, -20); g.lineTo(-12, 20); g.stroke(); g.restore();
+// plate highlights
+poly([[-43, -33], [-18, -47], [2, -43], [-25, -33]], 'rgba(255,255,255,.46)');
+poly([[52, -55], [91, -67], [104, -53], [64, -43]], 'rgba(255,255,255,.40)');
+g.restore();
+
+// Chunky, thumbnail-safe title: title only, no submission copy or borders.
+function titleLine(text, x, y, size) {
+  g.save(); g.textAlign = portrait ? 'center' : 'left'; g.textBaseline = 'middle';
+  g.font = '900 ' + size + 'px "Arial Black", Impact, sans-serif'; g.lineJoin = 'round';
+  g.shadowColor = 'rgba(64,28,125,.72)'; g.shadowBlur = 0; g.shadowOffsetX = 10 * U; g.shadowOffsetY = 13 * U;
+  g.strokeStyle = '#41206f'; g.lineWidth = 17 * U; g.strokeText(text, x, y);
+  g.shadowColor = 'rgba(255,75,205,.72)'; g.shadowOffsetX = 4 * U; g.shadowOffsetY = 6 * U; g.strokeStyle = '#ffb8f1'; g.lineWidth = 7 * U; g.strokeText(text, x, y);
+  const tg = g.createLinearGradient(0, y - size, 0, y + size); tg.addColorStop(0, '#ffffff'); tg.addColorStop(.45, '#f7f2ff'); tg.addColorStop(1, '#92ffff');
+  g.shadowOffsetX = 0; g.shadowOffsetY = 0; g.fillStyle = tg; g.fillText(text, x, y); g.restore();
 }
+const titleSize = portrait ? Math.min(W * .145, 130 * U) : Math.min(W * .102, 151 * U);
+if (portrait) { titleLine('NEON', W * .5, H * .13, titleSize); titleLine('SLASHER', W * .5, H * .25, titleSize); }
+else { titleLine('NEON', W * .055, H * .30, titleSize); titleLine('SLASHER', W * .055, H * .43, titleSize); }
 document.title = 'ready';
 </script>
 </body>
