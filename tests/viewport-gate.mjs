@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 
-const URL = 'http://localhost:8533/?debug=1';
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 const VIEWPORTS = [[907,510],[1216,684],[1077,606],[821,462],[1366,768],[1920,1080],[1536,864],[1280,720],[800,450],[1080,607]];
 let failures = 0;
 function check(name, ok) { console.log(`${ok ? 'PASS' : 'FAIL'} — ${name}`); if (!ok) failures++; }

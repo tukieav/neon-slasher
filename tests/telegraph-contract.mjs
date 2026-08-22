@@ -1,8 +1,10 @@
 import { chromium } from 'playwright';
 
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
+
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForFunction(() => window.__astro?.getState().state === 'menu');
 const isolatedSpawn = async (type, x, y) => page.evaluate(([t, px, py]) => { window.__astro.testStart(); window.__astro.spawnAt(t, px, py); }, [type, x, y]);
 const check = async (name, predicate, wait = 0) => {

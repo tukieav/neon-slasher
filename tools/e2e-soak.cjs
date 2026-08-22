@@ -1,4 +1,5 @@
 const { chromium } = require('playwright');
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 
 (async () => {
   const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
@@ -6,7 +7,7 @@ const { chromium } = require('playwright');
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+  await page.goto(URL, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.__astro?.getState().state === 'menu');
   const first = await page.evaluate(() => window.__astro.runSoak(120));
   await page.evaluate(() => window.__astro.setPausedForTest('soak', true));

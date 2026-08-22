@@ -1,5 +1,6 @@
 // Render covers (16:9, 1:1, 2:3) + gameplay screenshots
 import { chromium } from 'playwright';
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -22,7 +23,7 @@ for (const c of covers) {
 
 // gameplay screenshots — play via debug hook, capture combo moments
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 const W = 960, H = 640;
 const bbox = await page.locator('#game').boundingBox();

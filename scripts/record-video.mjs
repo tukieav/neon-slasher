@@ -1,5 +1,6 @@
 // Record preview videos (landscape 1280x720 + portrait 720x1280), bot plays via debug hook
 import { chromium } from 'playwright';
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 import { readdirSync, renameSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -12,7 +13,7 @@ const dir = join(root, 'marketing', 'rec-' + mode);
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const ctx = await browser.newContext({ viewport: size, recordVideo: { dir, size } });
 const page = await ctx.newPage();
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 
 const W = 960, H = 640;

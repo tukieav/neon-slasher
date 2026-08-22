@@ -73,6 +73,7 @@ let tPulse = 0;
 let spawnQueue = [];
 let spawnTimer = 0;
 let spawnGap = 0.35;
+let renderedDeflectMarkers = 0;
 let deathT = 0;            // time since death (explosion -> stats overlay fade-in)
 let stats = null;          // per-run derived stats from meta upgrades + perk
 let runCores = 0;          // cores collected this run (banked on game over)
@@ -136,7 +137,7 @@ function setPaused(reason, shouldPause) {
   paused = next;
   if (paused) {
     for (const key in KEYS) KEYS[key] = false;
-    joy.active = false; rightTouch.active = false;
+    clearTouchInput();
     audio.pauseAudio();
     if (state === 'playing') gameplayStop();
   } else {
@@ -191,6 +192,9 @@ function startWave(n) {
 }
 
 function spawnEnemy(type, px, py) {
+  // Effects can shed old entries safely, but live threats must never be
+  // evicted: wave pacing is a gameplay contract, not a visual preference.
+  if (enemies.length >= CAPS.enemies) return false;
   let a = Math.random() * Math.PI * 2;
   if (hazard && hazard.warning <= 0 && hazard.active > 0 && px == null) {
     // Never teleport a robot into the currently electrified sector.
@@ -208,27 +212,28 @@ function spawnEnemy(type, px, py) {
     addParticle({ x, y, vx: Math.cos(pa) * 90, vy: Math.sin(pa) * 90 - 40, life: 0.4, t: 0, hue: beamHue, spring: false, r: 2 });
   }
   if (type === 'melee') {
-    pushBounded(enemies, { type, x, y, hp: 1, r: 14, speed: 70 + wv * 4, t: 0, spawn: 0.6, hue: 185, windup: 0, attackCd: 0.35 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: 1, r: 14, speed: 70 + wv * 4, t: 0, spawn: 0.6, hue: 185, windup: 0, attackCd: 0.35 });
   } else if (type === 'shooter') {
-    pushBounded(enemies, { type, x, y, hp: 1, r: 13, speed: 55 + wv * 2, t: Math.random() * 2, spawn: 0.6, fireCd: 1.6, charge: 0, hue: 300 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: 1, r: 13, speed: 55 + wv * 2, t: Math.random() * 2, spawn: 0.6, fireCd: 1.6, charge: 0, hue: 300 });
   } else if (type === 'kamikaze') {
-    pushBounded(enemies, { type, x, y, hp: 1, r: 11, speed: 150 + wv * 5, t: 0, spawn: 0.6, fuse: 0, hue: 20 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: 1, r: 11, speed: 150 + wv * 5, t: 0, spawn: 0.6, fuse: 0, hue: 20 });
   } else if (type === 'shield') {
     // shield droid: front is invulnerable — hit it from behind (faces the hero)
-    pushBounded(enemies, { type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: 0, hue: 130 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: 0, hue: 130 });
   } else if (type === 'splitter') {
     // splits into two minis on death
-    pushBounded(enemies, { type, x, y, hp: 2, r: 17, speed: 60 + wv * 3, t: 0, spawn: 0.7, hue: 50, pulse: 0 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: 2, r: 17, speed: 60 + wv * 3, t: 0, spawn: 0.7, hue: 50, pulse: 0 });
   } else if (type === 'mini') {
-    pushBounded(enemies, { type: 'melee', mini: true, x, y, hp: 1, r: 8, speed: 130 + wv * 4, t: 0, spawn: 0.25, hue: 50, windup: 0, attackCd: 0.35 }, CAPS.enemies);
+    enemies.push({ type: 'melee', mini: true, x, y, hp: 1, r: 8, speed: 130 + wv * 4, t: 0, spawn: 0.25, hue: 50, windup: 0, attackCd: 0.35 });
   } else if (type === 'boss') {
     const bhp = 16 + Math.floor(wv / 5) * 8;
-    pushBounded(enemies, { type, x, y, hp: bhp, maxHp: bhp, r: 34, speed: 45, t: 0, spawn: 1, fireCd: 2.5, chargeCd: 4, phaseWarn: 0, charging: 0, cvx: 0, cvy: 0, hue: 265 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: bhp, maxHp: bhp, r: 34, speed: 45, t: 0, spawn: 1, fireCd: 2.5, chargeCd: 4, phaseWarn: 0, charging: 0, cvx: 0, cvy: 0, hue: 265 });
   } else if (type === 'twin') {
     // twin core boss (every 10 waves): orbits arena, spiral fire
     const bhp = 12 + Math.floor(wv / 10) * 8;
-    pushBounded(enemies, { type, x, y, hp: bhp, maxHp: bhp, r: 26, speed: 60, t: Math.random() * 6, spawn: 1, fireCd: 2, orbitA: a, orbitDir: Math.random() < 0.5 ? 1 : -1, hue: 335 }, CAPS.enemies);
+    enemies.push({ type, x, y, hp: bhp, maxHp: bhp, r: 26, speed: 60, t: Math.random() * 6, spawn: 1, fireCd: 2, orbitA: a, orbitDir: Math.random() < 0.5 ? 1 : -1, hue: 335 });
   }
+  return true;
 }
 
 // ---------- particles ----------
@@ -567,7 +572,10 @@ function update(dt) {
   // spawn queue
   if (spawnQueue.length > 0) {
     spawnTimer -= sdt;
-    if (spawnTimer <= 0) { spawnEnemy(spawnQueue.shift()); spawnTimer = spawnGap; }
+    if (spawnTimer <= 0 && enemies.length < CAPS.enemies) {
+      spawnEnemy(spawnQueue.shift());
+      spawnTimer = spawnGap;
+    }
   }
 
   // enemies
@@ -1231,6 +1239,7 @@ function fullRect() {
 }
 
 function render() {
+  renderedDeflectMarkers = 0;
   // ---- screen space: cyberpunk stadium surroundings (fills every pixel) ----
   g.setTransform(DPR, 0, 0, DPR, 0, 0);
   if (!envCanvas) buildEnv();
@@ -1333,8 +1342,21 @@ function render() {
     for (const b of bullets) {
       g.save();
       g.shadowColor = 'hsl(' + b.hue + ',100%,60%)'; g.shadowBlur = 14;
-      g.fillStyle = 'hsl(' + b.hue + ',100%,70%)';
-      g.beginPath(); g.arc(b.x, b.y, b.r, 0, Math.PI * 2); g.fill();
+      if (b.friendly) {
+        // Returning shots read as a bright arrow and a trailing streak, so
+        // they remain recognizable among neon particles and core drops.
+        renderedDeflectMarkers++;
+        const a = Math.atan2(b.vy, b.vx);
+        g.translate(b.x, b.y); g.rotate(a);
+        g.strokeStyle = '#b8ffe8'; g.fillStyle = '#4dffd2'; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(-22, 0); g.lineTo(-5, 0); g.stroke();
+        g.beginPath(); g.moveTo(10, 0); g.lineTo(-5, -7); g.lineTo(-3, 0); g.lineTo(-5, 7); g.closePath(); g.fill(); g.stroke();
+        g.globalAlpha = 0.8;
+        g.beginPath(); g.arc(0, 0, b.r + 4, 0, Math.PI * 2); g.stroke();
+      } else {
+        g.fillStyle = 'hsl(' + b.hue + ',100%,70%)';
+        g.beginPath(); g.arc(b.x, b.y, b.r, 0, Math.PI * 2); g.fill();
+      }
       g.restore();
     }
 
@@ -2247,6 +2269,19 @@ canvas.addEventListener('mousedown', (e) => {
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // touch: left half = joystick, right half = tap slash / swipe dash
+function clearJoystick() {
+  joy.active = false; joy.id = -1; joy.dx = 0; joy.dy = 0;
+}
+
+function clearRightTouch() {
+  rightTouch.active = false; rightTouch.id = -1;
+}
+
+function clearTouchInput() {
+  clearJoystick();
+  clearRightTouch();
+}
+
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
   isTouch = true;
@@ -2272,13 +2307,13 @@ canvas.addEventListener('touchmove', (e) => {
     }
   }
 }, { passive: false });
-canvas.addEventListener('touchend', (e) => {
-  e.preventDefault();
+function finishTouches(e, cancelled = false) {
   for (const t of e.changedTouches) {
-    const p = canvasPos(t.clientX, t.clientY);
-    if (joy.active && t.identifier === joy.id) { joy.active = false; joy.dx = 0; joy.dy = 0; }
+    if (joy.active && t.identifier === joy.id) { clearJoystick(); }
     else if (rightTouch.active && t.identifier === rightTouch.id) {
-      rightTouch.active = false;
+      if (cancelled) { clearRightTouch(); continue; }
+      const p = canvasPos(t.clientX, t.clientY);
+      clearRightTouch();
       const dx = p.x - rightTouch.x0, dy = p.y - rightTouch.y0;
       const dist = Math.hypot(dx, dy);
       const dt2 = performance.now() - rightTouch.t0;
@@ -2298,6 +2333,15 @@ canvas.addEventListener('touchend', (e) => {
       }
     }
   }
+}
+
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  finishTouches(e);
+}, { passive: false });
+canvas.addEventListener('touchcancel', (e) => {
+  e.preventDefault();
+  finishTouches(e, true);
 }, { passive: false });
 
 // One listener each: the simulation and audio stop while the game cannot be
@@ -2317,6 +2361,10 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
     spawn: (type) => spawnEnemy(type),
     spawnAt: (type, x, y) => spawnEnemy(type, x, y),
     clearArena: () => { enemies = []; bullets = []; spawnQueue = ['__test_hold']; spawnTimer = 999; },
+    removeOneEnemyForTest: () => { if (enemies.length) enemies.shift(); },
+    spawnIncomingBulletForTest: () => {
+      bullets.push({ x: hero.x + 58, y: hero.y, vx: -150, vy: 0, r: 6, hue: 320, friendly: false });
+    },
     testStart: () => { reset(); state = 'playing'; introT = 0; spawnQueue = ['__test_hold']; spawnTimer = 999; },
     setWave: (n) => { enemies = []; bullets = []; spawnQueue = []; startWave(n); },
     openShop: () => { if (state === 'menu' || state === 'gameover') { state = 'shop'; shopTab = 0; } },
@@ -2330,6 +2378,10 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
       cores: meta.cores, bestWave: meta.bestWave, streak: meta.streakCount,
       katana: meta.katana, perk: meta.perk, plays: meta.plays,
       shopTab,
+      queuedSpawns: spawnQueue.length,
+      friendlyBullets: bullets ? bullets.filter(b => b.friendly).length : 0,
+      renderedDeflectMarkers,
+      input: { joyActive: joy.active, joyDx: joy.dx, joyDy: joy.dy, rightActive: rightTouch.active },
       hazard: hazard ? { angle: hazard.angle, width: hazard.width, warning: hazard.warning, active: hazard.active } : null,
       enemies: enemies ? enemies.map(e => ({ dx: e.x - hero.x, dy: e.y - hero.y, type: e.type, hp: e.hp, windup: e.windup || 0, charge: e.charge || 0, fuse: e.fuse || 0, fuseStarted: !!e.fuseStarted, pulse: e.pulse || 0, phaseWarn: e.phaseWarn || 0 })) : [],
       coreDrops: cores ? cores.length : 0,

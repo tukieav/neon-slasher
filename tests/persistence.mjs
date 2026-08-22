@@ -1,10 +1,12 @@
 import { chromium } from 'playwright';
 
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
+
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
 page.on('pageerror', e => errors.push(e.message));
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForFunction(() => window.__astro?.getState().state === 'menu');
 await page.evaluate(() => localStorage.setItem('neonslasher.meta', '{bad json'));
 await page.reload({ waitUntil: 'networkidle' });
@@ -16,7 +18,7 @@ const malformedSafe = await page.evaluate(() => {
 const oldContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
 const oldPage = await oldContext.newPage();
 await oldPage.addInitScript(() => localStorage.setItem('neonslasher.meta', JSON.stringify({ cores: 25, upgrades: { hp: 1 }, katanasOwned: [true], perk: 'unknown' })));
-await oldPage.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await oldPage.goto(URL, { waitUntil: 'networkidle' });
 await oldPage.waitForFunction(() => window.__astro?.getState().state === 'menu');
 const oldResult = await oldPage.evaluate(() => {
   const m = window.__astro.getMeta();
