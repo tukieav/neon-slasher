@@ -923,6 +923,24 @@ function drawFloorDynamic() {
       acc += segs[s];
     }
   }
+  // The first frame shares the cover's energetic arena promise: a soft cyan
+  // floor pulse remains on the menu, while gameplay keeps its existing art
+  // direction and only receives the stronger Fever treatment below.
+  if (state === 'menu') {
+    const cycle = (tPulse * 0.46) % 1;
+    const radius = 44 + cycle * (ARENA_R - 20);
+    const alpha = (1 - cycle) * 0.44;
+    g.globalCompositeOperation = 'lighter';
+    g.shadowColor = '#8cffff'; g.shadowBlur = 28;
+    g.strokeStyle = 'rgba(154,255,250,' + alpha + ')'; g.lineWidth = 5 - cycle * 2;
+    g.beginPath(); g.arc(CX, CY, radius, 0, Math.PI * 2); g.stroke();
+    const pulse = g.createRadialGradient(CX, CY, Math.max(8, radius - 30), CX, CY, radius + 44);
+    pulse.addColorStop(0, 'rgba(116,255,246,0)');
+    pulse.addColorStop(.5, 'rgba(116,255,246,' + (alpha * .19) + ')');
+    pulse.addColorStop(1, 'rgba(116,255,246,0)');
+    g.fillStyle = pulse; g.beginPath(); g.arc(CX, CY, radius + 44, 0, Math.PI * 2); g.fill();
+    g.globalCompositeOperation = 'source-over';
+  }
   // Fever wakes the arena itself: amber energy sweeps across the floor in
   // repeated rings, making the speed/combo buff visible without new HUD text.
   if (fever > 0 && state === 'playing') {
@@ -1279,6 +1297,7 @@ function render() {
   g.setTransform(DPR, 0, 0, DPR, 0, 0);
   if (!envCanvas) buildEnv();
   g.drawImage(envCanvas, 0, 0, VW, VH);
+  if (state === 'menu') drawMenuAtmosphere();
   drawEnvDynamic();
 
   // ---- world space (arena + entities), with intro sweep camera ----
@@ -1598,6 +1617,26 @@ function render() {
     g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText('LOADING...', CX, CY);
   }
+}
+
+function drawMenuAtmosphere() {
+  // High-key arena wash and slow spotlights are exclusive to the menu. They
+  // bridge the bright cover without flattening the darker combat presentation.
+  const acx = cam.ox + CX * cam.scale, acy = cam.oy + CY * cam.scale;
+  const ar = ARENA_R * cam.scale;
+  g.save(); g.globalCompositeOperation = 'screen';
+  const wash = g.createRadialGradient(acx, acy - ar * .16, ar * .12, acx, acy, ar * 1.72);
+  wash.addColorStop(0, 'rgba(105,255,247,.34)');
+  wash.addColorStop(.45, 'rgba(103,180,255,.15)');
+  wash.addColorStop(1, 'rgba(222,91,255,0)');
+  g.fillStyle = wash; g.fillRect(0, 0, VW, VH);
+  for (let i = 0; i < 3; i++) {
+    const sx = VW * (.14 + i * .36), swing = Math.sin(tPulse * .55 + i * 2.2) * VW * .18;
+    const beam = g.createLinearGradient(sx, 0, sx + swing, VH);
+    beam.addColorStop(0, 'hsla(' + (i === 1 ? 300 : 185) + ',100%,78%,.22)'); beam.addColorStop(1, 'hsla(' + (i === 1 ? 300 : 185) + ',100%,72%,0)');
+    g.fillStyle = beam; g.beginPath(); g.moveTo(sx - 18, 0); g.lineTo(sx + 18, 0); g.lineTo(sx + swing + 110, VH); g.lineTo(sx + swing - 110, VH); g.closePath(); g.fill();
+  }
+  g.restore();
 }
 
 function heartPath(x, y, s) {
@@ -2069,10 +2108,21 @@ function renderMenu() {
     breathe: mt, cloak: 0.25 + Math.abs(Math.sin(mt * 0.7)) * 0.3,
     slash: menuSlash,
   });
+  // Brighter, outlined title treatment makes the cover-to-menu handoff feel
+  // like one vivid arena presentation rather than a cut to a dark HUD.
   g.save();
   g.globalAlpha = titleAlpha;
+  g.font = '900 72px "Segoe UI", sans-serif'; g.lineJoin = 'round';
+  g.shadowColor = 'rgba(44,16,100,.72)'; g.shadowBlur = 0; g.shadowOffsetX = 5; g.shadowOffsetY = 7;
+  g.strokeStyle = '#32156d'; g.lineWidth = 12;
+  g.strokeText('NEON', CX + titleJitter, CY - 168);
+  g.strokeText('SLASHER', CX - titleJitter, CY - 98);
+  g.shadowOffsetX = 0; g.shadowOffsetY = 0;
   g.shadowColor = '#4dffd2'; g.shadowBlur = 30;
-  g.fillStyle = '#ffffff'; g.font = '900 72px "Segoe UI", sans-serif';
+  g.strokeStyle = '#ffb8f1'; g.lineWidth = 4;
+  g.strokeText('NEON', CX + titleJitter, CY - 168);
+  g.strokeText('SLASHER', CX - titleJitter, CY - 98);
+  g.fillStyle = '#ffffff';
   // glitch accent: occasional RGB-split jitter on the title
   const glitch = Math.sin(mt * 1.7) > 0.96;
   if (glitch) {
