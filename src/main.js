@@ -56,6 +56,7 @@ let hero, enemies, bullets, particles, floats, pickups, cores;
 let combo = 0, comboTimer = 0, multiplier = 1;
 let shake = 0, hurtFlash = 0, slowmo = 0, timeScale = 1;
 let hitStop = 0;           // brief freeze on hit (juice)
+let impactFrame = null;    // one short, readable kill punctuation
 let debris = [];           // sliced robot halves
 let flashes = [];          // radial light flashes (deflect etc.)
 let beams = [];            // teleport light columns at enemy spawn points
@@ -112,7 +113,7 @@ function reset() {
   enemies = []; bullets = []; particles = []; floats = []; pickups = []; cores = [];
   score = 0; wave = 0; combo = 0; comboTimer = 0; multiplier = 1;
   shake = 0; hurtFlash = 0; slowmo = 0; timeScale = 1;
-  hitStop = 0; debris = []; flashes = []; beams = [];
+  hitStop = 0; impactFrame = null; debris = []; flashes = []; beams = [];
   secondWindUsed = false; secondWindShield = 0; killsTotal = 0;
   spawnQueue = []; spawnTimer = 0;
   runCores = 0; fever = 0; feverUsedAtCombo = 0; vampireKills = 0;
@@ -322,6 +323,10 @@ function doSlash() {
 
 function killEnemy(e) {
   e.dead = true;
+  // A kill gets one 65ms punctuation frame: under the 70ms quality limit but
+  // long enough for the slash, enemy flash, and score pop to read as one hit.
+  hitStop = Math.max(hitStop, 0.065);
+  impactFrame = { x: e.x, y: e.y, hue: e.hue, t: 0, life: e.type === 'boss' || e.type === 'twin' ? 0.18 : 0.12 };
   killsTotal++;
   combo++;
   comboTimer = 3;
@@ -759,6 +764,10 @@ function update(dt) {
 }
 
 function updateFx(dt) {
+  if (impactFrame) {
+    impactFrame.t += dt;
+    if (impactFrame.t >= impactFrame.life) impactFrame = null;
+  }
   if (waveBanner > 0) waveBanner -= dt;
   if (shake > 0) shake = Math.max(0, shake - dt * 40);
   if (hurtFlash > 0) hurtFlash -= dt;
@@ -913,6 +922,23 @@ function drawFloorDynamic() {
       }
       acc += segs[s];
     }
+  }
+  // Fever wakes the arena itself: amber energy sweeps across the floor in
+  // repeated rings, making the speed/combo buff visible without new HUD text.
+  if (fever > 0 && state === 'playing') {
+    const cycle = (tPulse * 1.7) % 1;
+    const radius = 36 + cycle * (ARENA_R - 22);
+    const alpha = (1 - cycle) * 0.72;
+    g.globalCompositeOperation = 'lighter';
+    g.shadowColor = '#ffe14d'; g.shadowBlur = 22;
+    g.strokeStyle = 'rgba(255,225,77,' + alpha + ')'; g.lineWidth = 5 - cycle * 2;
+    g.beginPath(); g.arc(CX, CY, radius, 0, Math.PI * 2); g.stroke();
+    const glow = g.createRadialGradient(CX, CY, Math.max(4, radius - 26), CX, CY, radius + 32);
+    glow.addColorStop(0, 'rgba(255,220,70,0)');
+    glow.addColorStop(0.5, 'rgba(255,220,70,' + (alpha * 0.14) + ')');
+    glow.addColorStop(1, 'rgba(255,220,70,0)');
+    g.fillStyle = glow; g.beginPath(); g.arc(CX, CY, radius + 32, 0, Math.PI * 2); g.fill();
+    g.globalCompositeOperation = 'source-over';
   }
   // neon reflections on the floor: soft pools of light under glowing actors
   if (state === 'playing' || state === 'gameover') {
@@ -1267,6 +1293,19 @@ function render() {
   g.drawImage(floorCanvas, 0, 0);
   drawFloorDynamic();
   drawHazard();
+
+  if (impactFrame) {
+    const p = impactFrame.t / impactFrame.life;
+    const r = 18 + p * 58;
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    g.shadowColor = 'hsl(' + impactFrame.hue + ',100%,70%)'; g.shadowBlur = 22 * (1 - p);
+    g.strokeStyle = 'hsla(' + impactFrame.hue + ',100%,88%,' + (1 - p) + ')'; g.lineWidth = 7 * (1 - p) + 1;
+    g.beginPath(); g.arc(impactFrame.x, impactFrame.y, r, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,' + ((1 - p) * 0.65) + ')';
+    g.beginPath(); g.arc(impactFrame.x, impactFrame.y, 8 + (1 - p) * 13, 0, Math.PI * 2); g.fill();
+    g.restore();
+  }
 
   // pulsing arena ring (fever = golden overdrive)
   const pulse = 1 + Math.sin(tPulse * 2.2) * 0.008;
@@ -2015,6 +2054,9 @@ function renderOnboarding() {
 }
 function renderMenu() {
   g.textAlign = 'center'; g.textBaseline = 'middle';
+  const titleIn = Math.min(1, tPulse / 0.72);
+  const titleAlpha = titleIn < 1 ? (Math.floor(tPulse * 30) % 4 === 0 ? 0.18 : 0.35 + titleIn * 0.65) : 1;
+  const titleJitter = titleIn < 1 ? (Math.sin(tPulse * 68) * (1 - titleIn) * 5) : 0;
   // animated warrior showcase: slow orbit walk + periodic slash
   const mt = tPulse;
   const orbA = mt * 0.42;
@@ -2028,25 +2070,26 @@ function renderMenu() {
     slash: menuSlash,
   });
   g.save();
+  g.globalAlpha = titleAlpha;
   g.shadowColor = '#4dffd2'; g.shadowBlur = 30;
   g.fillStyle = '#ffffff'; g.font = '900 72px "Segoe UI", sans-serif';
   // glitch accent: occasional RGB-split jitter on the title
   const glitch = Math.sin(mt * 1.7) > 0.96;
   if (glitch) {
     g.fillStyle = 'rgba(255,60,120,0.6)';
-    g.fillText('NEON', CX + 3, CY - 168);
+    g.fillText('NEON', CX + 3 + titleJitter, CY - 168);
     g.fillStyle = 'rgba(60,220,255,0.6)';
-    g.fillText('NEON', CX - 3, CY - 166);
+    g.fillText('NEON', CX - 3 + titleJitter, CY - 166);
     g.fillStyle = '#ffffff';
   }
-  g.fillText('NEON', CX, CY - 168);
+  g.fillText('NEON', CX + titleJitter, CY - 168);
   g.shadowColor = '#ff4dff';
   if (glitch) {
     g.fillStyle = 'rgba(60,220,255,0.6)';
-    g.fillText('SLASHER', CX - 3, CY - 96);
+    g.fillText('SLASHER', CX - 3 - titleJitter, CY - 96);
     g.fillStyle = '#ffffff';
   }
-  g.fillText('SLASHER', CX, CY - 98);
+  g.fillText('SLASHER', CX - titleJitter, CY - 98);
   g.restore();
   // subtitle divider slashes
   g.strokeStyle = 'rgba(77,255,210,0.5)'; g.lineWidth = 2;
