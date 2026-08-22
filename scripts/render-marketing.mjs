@@ -9,7 +9,7 @@ const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome'
 
 const covers = [
   { w: 1920, h: 1080, sq: 0, out: 'cover-16x9.png' },
-  { w: 1080, h: 1080, sq: 1, out: 'cover-1x1.png' },
+  { w: 800, h: 800, sq: 1, out: 'cover-1x1.png' },
   { w: 800, h: 1200, sq: 1, out: 'cover-2x3.png' },
 ];
 for (const c of covers) {

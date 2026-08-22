@@ -1,13 +1,15 @@
-// Record preview videos (landscape 1280x720 + portrait 720x1280), bot plays via debug hook
+// Record current-spec previews. ffmpeg prepends the matching cover for 0.7s,
+// then cuts directly to gameplay; raw menu/setup seconds are discarded.
 import { chromium } from 'playwright';
 const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
-import { readdirSync, renameSync } from 'node:fs';
+import { readdirSync, renameSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mode = process.argv[2] || 'landscape';
-const size = mode === 'portrait' ? { width: 720, height: 1280 } : { width: 1280, height: 720 };
+const size = mode === 'portrait' ? { width: 800, height: 1200 } : { width: 1920, height: 1080 };
 const dir = join(root, 'marketing', 'rec-' + mode);
 
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
@@ -95,5 +97,17 @@ await ctx.close();
 await browser.close();
 const webm = readdirSync(dir).find(f => f.endsWith('.webm'));
 renameSync(join(dir, webm), join(root, 'marketing', 'raw-' + mode + '.webm'));
-console.log('saved marketing/raw-' + mode + '.webm; survived=' + (fin.state === 'playing'));
+const raw = join(root, 'marketing', 'raw-' + mode + '.webm');
+const cover = join(root, 'marketing', mode === 'portrait' ? 'cover-2x3.png' : 'cover-16x9.png');
+const output = join(root, 'marketing', 'video-' + mode + '.mp4');
+// 0.70s cover + 18.2s gameplay = 18.9s, with no menu, cursor, or audio.
+execFileSync('ffmpeg', [
+  '-y', '-loop', '1', '-framerate', '60', '-t', '0.7', '-i', cover,
+  '-ss', '3.6', '-t', '18.2', '-i', raw,
+  '-filter_complex', `[0:v]scale=${size.width}:${size.height},setsar=1[cover];[1:v]scale=${size.width}:${size.height},setsar=1[game];[cover][game]concat=n=2:v=1:a=0[v]`,
+  '-map', '[v]', '-an', '-c:v', 'libx264', '-preset', 'medium', '-crf', '29', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
+], { stdio: 'inherit' });
+rmSync(raw);
+rmSync(dir, { recursive: true, force: true });
+console.log('saved ' + output + '; survived=' + (fin.state === 'playing'));
 process.exit(fin.state === 'playing' ? 0 : 2);
