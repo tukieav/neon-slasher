@@ -37,6 +37,7 @@ function defaults() {
     perk: 'none',
     bestWave: 0,
     plays: 0,
+    onboardingSeen: false,
     streakCount: 0,
     streakLast: '',
   };
