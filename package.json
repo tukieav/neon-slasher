@@ -14,7 +14,8 @@
     "test:hazard": "node tests/hazard-contract.mjs",
     "test:persistence": "node tests/persistence.mjs",
     "test:soak": "node tools/e2e-soak.cjs",
-    "test:polish": "node tests/final-polish.mjs"
+    "test:polish": "node tests/final-polish.mjs",
+    "test:compliance": "node tests/r3-compliance.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

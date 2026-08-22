@@ -21,24 +21,27 @@ Dash through a cyber arena, carve apart specialized robots, deflect bullets, and
 
 ## Full description
 
-Enter a televised cyber arena as a neon blade fighter. Move freely, aim each
-slash, dash through danger, and reflect incoming projectiles back at their
-owners. Fast kills build Combo Fever while teleporting enemy waves constantly
-change the battlefield.
+Cut through teleported robot waves in a compact neon arena where every slash,
+dash, and deflected shot buys a little more space. Build a kill chain to trigger
+Combo Fever, then decide whether to chase Cores or reset your position before
+the next threat arrives.
 
-Every robot advertises its next threat: melee units wind up, shooters draw a
-charge line, kamikaze units count down, splitters pulse before a surge, and
-bosses announce their phase charge. From wave four onward, a warned electrified
-floor sector rewards smart dash positioning without spawning robots into danger.
+The core loop is move, aim, slash, dash, and survive escalating waves. Each
+robot communicates its danger before it acts: melee bots wind up, shooters draw
+charge lines, kamikaze bots count down, splitters pulse before speeding up, and
+bosses announce their charge. Shield units reward flanking, reflected bullets
+become player shots, and from wave four a warned electrified floor sector adds a
+clear positioning problem without spawning enemies inside it.
 
-Collect Cores, select run-defining perks, unlock katana styles, and improve
-health, dash, slash, and magnet abilities. Shield robots, splitters, shooters,
-kamikaze units, and Twin Core bosses require different positioning and timing.
+Cores bank between runs for health, dash, slash-range, and magnet upgrades,
+plus katana styles and selectable perks. Bosses arrive every five waves, with
+Twin Core fights at wave ten. A typical run lasts a few minutes, with quick
+retries for another attempt at a higher wave or score.
 
 ## Controls
 
-- Desktop: WASD or arrow keys to move; mouse to aim; left click to slash;
-  Space or right click to dash.
+- Desktop: WASD / ZQSD (AZERTY) or arrow keys to move; mouse to aim; left
+  click to slash; Space, Shift, or right click to dash.
 - Mobile: left-thumb joystick to move; tap the right side to slash; swipe the
   right side to dash.
 
@@ -73,5 +76,5 @@ kamikaze units, and Twin Core bosses require different positioning and timing.
 - Covers: `marketing/cover-16x9.png`, `marketing/cover-1x1.png`,
   `marketing/cover-2x3.png`
 - Screenshots: `marketing/screenshot-combo.png`, `marketing/screenshot-wave2.png`
-- Videos: `marketing/video-landscape.mp4` (1280x720),
-  `marketing/video-portrait.mp4` (720x1280)
+- Videos: `marketing/video-landscape.mp4` (1920x1080),
+  `marketing/video-portrait.mp4` (800x1200)
