@@ -82,6 +82,7 @@ let fever = 0;             // combo fever buff timer
 let feverUsedAtCombo = 0;
 let vampireKills = 0;
 let hintT = 0;             // contextual hint timer (first run seconds)
+let shieldHintShown = false; // one-time "dash behind it" hint per run
 let onboardingVisible = false;
 let lastAdAt = 0;          // gate midgame ads: max 1 per 60s
 let streakInfo = null;
@@ -118,6 +119,7 @@ function reset() {
   spawnQueue = []; spawnTimer = 0;
   runCores = 0; fever = 0; feverUsedAtCombo = 0; vampireKills = 0;
   hintT = 0; coresDoubled = false; newBestWave = false;
+  shieldHintShown = false;
   hazard = null;
 }
 
@@ -221,7 +223,12 @@ function spawnEnemy(type, px, py) {
     enemies.push({ type, x, y, hp: 1, r: 11, speed: 150 + wv * 5, t: 0, spawn: 0.6, fuse: 0, hue: 20 });
   } else if (type === 'shield') {
     // shield droid: front is invulnerable — hit it from behind (faces the hero)
-    enemies.push({ type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: 0, hue: 130 });
+    enemies.push({ type, x, y, hp: 2, r: 16, speed: 55 + wv * 3, t: 0, spawn: 0.7, face: Math.atan2(CY - y, CX - x), guardBreak: 0, hue: 130 });
+    if (!shieldHintShown) {
+      shieldHintShown = true;
+      addFloat(x, y - 34, 'DASH BEHIND IT!', 130);
+      addFloat(x, y - 52, 'OR DEFLECT SHOTS INTO IT', 55);
+    }
   } else if (type === 'splitter') {
     // splits into two minis on death
     enemies.push({ type, x, y, hp: 2, r: 17, speed: 60 + wv * 3, t: 0, spawn: 0.7, hue: 50, pulse: 0 });
@@ -277,10 +284,14 @@ function doSlash() {
     const dx = e.x - hero.x, dy = e.y - hero.y;
     const d = Math.hypot(dx, dy);
     if (d < RANGE + e.r && angDiff(Math.atan2(dy, dx), hero.aim) < HALF) {
-      // shield droid blocks frontal hits — attack from behind
-      if (e.type === 'shield' && angDiff(Math.atan2(hero.y - e.y, hero.x - e.x), e.face) < Math.PI * 0.5) {
+      // shield droid blocks frontal hits — attack from behind. The block arc is
+      // 130° (not 180°), and each blocked slash staggers the guard so the droid
+      // turns sluggishly for a moment — blocked hits build your opening.
+      if (e.type === 'shield' && angDiff(Math.atan2(hero.y - e.y, hero.x - e.x), e.face) < Math.PI * 0.36) {
+        e.guardBreak = 1.1;
         audio.deflectSound();
         addFloat(e.x, e.y - 20, 'BLOCKED!', 130);
+        addFloat(e.x, e.y - 38, 'GUARD STAGGERED', 55);
         burst(e.x, e.y, 130, 4, 90);
         shake = Math.min(shake + 2, 12);
         continue;
@@ -609,7 +620,17 @@ function update(dt) {
         if (e.windup <= 0) e.attackCd = 0.8;
       }
     } else if (e.type === 'shield') {
-      e.face = Math.atan2(dy, dx); // always faces the hero
+      // Fairness: the guard tracks the hero at a capped turn rate instead of
+      // snapping every frame, so dashing around it genuinely exposes the back.
+      // A blocked slash also breaks its guard briefly, slowing the turn more.
+      e.guardBreak = Math.max(0, (e.guardBreak || 0) - sdt);
+      const want = Math.atan2(dy, dx);
+      let diff = want - e.face;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      const turnRate = (e.guardBreak > 0 ? 0.9 : 2.6); // rad/s
+      const maxStep = turnRate * sdt;
+      e.face += Math.abs(diff) <= maxStep ? diff : Math.sign(diff) * maxStep;
       e.x += dx / d * e.speed * sdt; e.y += dy / d * e.speed * sdt;
       if (d < e.r + 14) damageHero();
     } else if (e.type === 'shooter') {
@@ -1906,14 +1927,21 @@ function drawEnemy(e) {
       if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
     }
     g.closePath(); g.fill(); g.stroke();
-    // projected hexcell energy shield (translucent plane in front)
-    const shimmer = 0.5 + Math.sin(e.t * 6) * 0.2;
+    // projected hexcell energy shield (translucent plane in front) — the drawn
+    // arc matches the real ±0.36π block window; stagger dims and cracks it.
+    const staggered = (e.guardBreak || 0) > 0;
+    const shimmer = staggered ? 0.25 : 0.5 + Math.sin(e.t * 6) * 0.2;
     g.fillStyle = 'hsla(' + e.hue + ',100%,65%,' + shimmer * 0.16 + ')';
-    g.strokeStyle = 'hsla(' + e.hue + ',100%,75%,' + shimmer + ')'; g.lineWidth = 3.5;
-    g.shadowBlur = 22;
-    g.beginPath(); g.arc(0, 0, e.r + 7, -Math.PI * 0.45, Math.PI * 0.45); 
-    g.arc(0, 0, e.r + 1, Math.PI * 0.45, -Math.PI * 0.45, true);
+    g.strokeStyle = 'hsla(' + e.hue + ',100%,75%,' + shimmer + ')'; g.lineWidth = staggered ? 2 : 3.5;
+    g.shadowBlur = staggered ? 8 : 22;
+    g.beginPath(); g.arc(0, 0, e.r + 7, -Math.PI * 0.36, Math.PI * 0.36);
+    g.arc(0, 0, e.r + 1, Math.PI * 0.36, -Math.PI * 0.36, true);
     g.closePath(); g.fill(); g.stroke();
+    // exposed core on the back — teaches "hit it from behind" visually
+    const corePulse = 0.6 + Math.sin(e.t * 5) * 0.4;
+    g.fillStyle = 'hsla(20,100%,62%,' + corePulse + ')';
+    g.shadowColor = '#ff8c40'; g.shadowBlur = 14;
+    g.beginPath(); g.arc(-e.r * 0.72, 0, 4.5, 0, Math.PI * 2); g.fill();
     // emitter studs
     g.fillStyle = '#d9ffe9';
     for (const sa of [-0.35, 0, 0.35]) {
@@ -2500,6 +2528,8 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
     setCombo: (n) => { combo = n; comboTimer = 3; multiplier = 1 + Math.floor(n / 3); },
     spawn: (type) => spawnEnemy(type),
     spawnAt: (type, x, y) => spawnEnemy(type, x, y),
+    slashToward: (a) => { hero.aim = a; doSlash(); },
+    setHeroPos: (x, y) => { hero.x = x; hero.y = y; },
     clearArena: () => { enemies = []; bullets = []; spawnQueue = ['__test_hold']; spawnTimer = 999; },
     removeOneEnemyForTest: () => { if (enemies.length) enemies.shift(); },
     spawnIncomingBulletForTest: () => {
@@ -2523,7 +2553,7 @@ if (new URLSearchParams(location.search).get('debug') === '1') {
       renderedDeflectMarkers,
       input: { joyActive: joy.active, joyDx: joy.dx, joyDy: joy.dy, rightActive: rightTouch.active },
       hazard: hazard ? { angle: hazard.angle, width: hazard.width, warning: hazard.warning, active: hazard.active } : null,
-      enemies: enemies ? enemies.map(e => ({ dx: e.x - hero.x, dy: e.y - hero.y, type: e.type, hp: e.hp, windup: e.windup || 0, charge: e.charge || 0, fuse: e.fuse || 0, fuseStarted: !!e.fuseStarted, pulse: e.pulse || 0, phaseWarn: e.phaseWarn || 0 })) : [],
+      enemies: enemies ? enemies.map(e => ({ dx: e.x - hero.x, dy: e.y - hero.y, type: e.type, hp: e.hp, windup: e.windup || 0, charge: e.charge || 0, fuse: e.fuse || 0, fuseStarted: !!e.fuseStarted, pulse: e.pulse || 0, phaseWarn: e.phaseWarn || 0, face: e.face || 0, guardBreak: e.guardBreak || 0 })) : [],
       coreDrops: cores ? cores.length : 0,
       bullets: bullets ? bullets.length : 0,
     }),
