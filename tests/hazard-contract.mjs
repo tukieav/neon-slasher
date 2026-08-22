@@ -1,10 +1,18 @@
 import { chromium } from 'playwright';
 
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
+
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForFunction(() => window.__astro?.getState().state === 'menu');
-await page.evaluate(() => { window.__astro.testStart(); window.__astro.setWave(4); });
+await page.evaluate(() => {
+  window.__astro.testStart();
+  window.__astro.setWave(4);
+  // Isolate the active-hazard spawn: the wave's opening queue is allowed to
+  // appear during its warning and is not the contract under test here.
+  window.__astro.clearArena();
+});
 const announced = await page.evaluate(() => window.__astro.getState().hazard?.warning > 0);
 await page.waitForTimeout(1400);
 await page.evaluate(() => window.__astro.spawn('melee'));

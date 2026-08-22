@@ -1,12 +1,13 @@
 // QA screenshots: menu + gameplay states
 import { chromium } from 'playwright';
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 const shots = process.argv[2] || 'qa';
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome' });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForFunction(() => window.__astro && window.__astro.getState().state === 'menu', null, { timeout: 15000 });
 await page.waitForTimeout(1500);
 await page.screenshot({ path: `qa/${shots}-menu.png` });

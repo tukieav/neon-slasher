@@ -1,5 +1,6 @@
 // Vision-gate screenshots: menu + wave1 spawn + mid-combat at given resolution
 import { chromium } from 'playwright';
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 const [wArg, hArg, tag] = process.argv.slice(2);
 const W2 = parseInt(wArg || '1280'), H2 = parseInt(hArg || '720');
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
@@ -7,7 +8,7 @@ const page = await browser.newPage({ viewport: { width: W2, height: H2 } });
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
-await page.goto('http://localhost:8533/?debug=1', { waitUntil: 'networkidle' });
+await page.goto(URL, { waitUntil: 'networkidle' });
 await page.waitForFunction(() => window.__astro && window.__astro.getState().state === 'menu', null, { timeout: 15000 });
 await page.waitForTimeout(1500);
 await page.screenshot({ path: `qa/${tag}-menu.png` });

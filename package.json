@@ -13,7 +13,8 @@
     "test:telegraphs": "node tests/telegraph-contract.mjs",
     "test:hazard": "node tests/hazard-contract.mjs",
     "test:persistence": "node tests/persistence.mjs",
-    "test:soak": "node tools/e2e-soak.cjs"
+    "test:soak": "node tools/e2e-soak.cjs",
+    "test:polish": "node tests/final-polish.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",

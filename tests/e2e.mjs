@@ -1,7 +1,7 @@
 // Neon Slasher — full functional test (Playwright + system Chrome)
 import { chromium } from 'playwright';
 
-const URL = 'http://localhost:8533/?debug=1';
+const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
 const W = 960, H = 640;
 let failures = 0;
 function check(name, cond) {
