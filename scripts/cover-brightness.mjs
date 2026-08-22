@@ -1,15 +1,16 @@
 // Programmatic Round 4 marketing-cover brightness gate.
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { inflateSync } from 'node:zlib';
 import { join } from 'node:path';
 
 const root = new URL('..', import.meta.url).pathname;
 const files = ['cover-16x9.png', 'cover-1x1.png', 'cover-2x3.png'];
+const ref = process.argv.find(arg => arg.startsWith('--ref='))?.slice(6);
 let failed = false;
 
-function pngPixels(path) {
-  const b = readFileSync(path);
-  if (b.toString('ascii', 1, 4) !== 'PNG') throw new Error(path + ': not a PNG');
+function pngPixels(b, label) {
+  if (b.toString('ascii', 1, 4) !== 'PNG') throw new Error(label + ': not a PNG');
   let offset = 8, width, height, depth, type, chunks = [];
   while (offset < b.length) {
     const len = b.readUInt32BE(offset), name = b.toString('ascii', offset + 4, offset + 8), data = b.subarray(offset + 8, offset + 8 + len); offset += len + 12;
@@ -17,7 +18,7 @@ function pngPixels(path) {
     if (name === 'IDAT') chunks.push(data);
     if (name === 'IEND') break;
   }
-  if (depth !== 8 || !([2, 6].includes(type))) throw new Error(path + ': expected 8-bit RGB/RGBA PNG');
+  if (depth !== 8 || !([2, 6].includes(type))) throw new Error(label + ': expected 8-bit RGB/RGBA PNG');
   const channels = type === 6 ? 4 : 3, stride = width * channels, raw = inflateSync(Buffer.concat(chunks));
   const out = new Uint8Array(width * height * channels); let prev = new Uint8Array(stride), p = 0;
   for (let y = 0; y < height; y++) {
@@ -35,7 +36,8 @@ function pngPixels(path) {
   return { width, height, channels, data: out };
 }
 for (const file of files) {
-  const im = pngPixels(join(root, 'marketing', file)); let lumSum = 0, satSum = 0, dark = 0;
+  const bytes = ref ? execFileSync('git', ['show', `${ref}:marketing/${file}`]) : readFileSync(join(root, 'marketing', file));
+  const im = pngPixels(bytes, file); let lumSum = 0, satSum = 0, dark = 0;
   const n = im.width * im.height;
   for (let i = 0; i < im.data.length; i += im.channels) {
     const r = im.data[i] / 255, g = im.data[i + 1] / 255, b = im.data[i + 2] / 255;
@@ -44,7 +46,7 @@ for (const file of files) {
   }
   const meanLum = lumSum / n, darkFrac = dark / n, meanSat = satSum / n;
   const pass = meanLum >= 80 && darkFrac <= .35 && meanSat >= .35;
-  console.log(`${file}: meanLum=${meanLum.toFixed(2)} darkFrac=${darkFrac.toFixed(4)} meanSat=${meanSat.toFixed(4)} ${pass ? 'PASS' : 'FAIL'}`);
+  console.log(`${ref ? ref + ' ' : ''}${file}: meanLum=${meanLum.toFixed(2)} darkFrac=${darkFrac.toFixed(4)} meanSat=${meanSat.toFixed(4)} ${pass ? 'PASS' : 'FAIL'}`);
   if (!pass) failed = true;
 }
 process.exit(failed ? 1 : 0);

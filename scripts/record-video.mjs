@@ -2,7 +2,7 @@
 // then cuts directly to gameplay; raw menu/setup seconds are discarded.
 import { chromium } from 'playwright';
 const URL = process.env.GAME_URL || 'http://localhost:8533/?debug=1';
-import { readdirSync, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -11,6 +11,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const mode = process.argv[2] || 'landscape';
 const size = mode === 'portrait' ? { width: 800, height: 1200 } : { width: 1920, height: 1080 };
 const dir = join(root, 'marketing', 'rec-' + mode);
+mkdirSync(dir, { recursive: true });
 
 const browser = await chromium.launch({ executablePath: '/usr/bin/google-chrome', headless: true });
 const ctx = await browser.newContext({ viewport: size, recordVideo: { dir, size } });
